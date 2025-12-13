@@ -12,7 +12,7 @@
 use std::env;
 use std::process;
 
-use segment::{Segment, SegmentHandler, ParserError};
+use segment::{Segment, SegmentHandler, Halt};
 use x12_host::{ChunkedParser, ChunkedParseConfig};
 
 /// Custom handler that collects segment statistics
@@ -44,16 +44,14 @@ impl StatsHandler {
 }
 
 impl SegmentHandler for StatsHandler {
-    type Error = ParserError;
-
-    fn handle(&mut self, segment: &Segment) -> Result<(), Self::Error> {
+    fn handle(&mut self, segment: &Segment) -> Result<(), Halt> {
         // Count segment type
         if let Some(id) = segment.id_str() {
             *self.segment_counts.entry(id.to_string()).or_insert(0) += 1;
         }
 
         // Count elements
-        self.total_elements += segment.element_count;
+        self.total_elements += segment.element_count();
 
         Ok(())
     }

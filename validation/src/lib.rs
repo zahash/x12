@@ -33,7 +33,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use segment::{ParserError, Segment, SegmentHandler};
+use segment::{Segment, SegmentHandler};
 
 /// Maximum number of errors to accumulate before stopping
 pub const MAX_ERRORS: usize = 1000;
@@ -232,16 +232,14 @@ impl Snip1Validator {
     }
 
     fn validate_isa(&mut self, segment: &Segment) {
-        if segment.element_count != 16 {
+        let count = segment.element_count();
+        if count != 16 {
             self.add_error(
                 Severity::Error,
                 ErrorKind::InvalidSyntax,
                 segment,
                 None,
-                alloc::format!(
-                    "ISA must have exactly 16 elements, found {}",
-                    segment.element_count
-                ),
+                alloc::format!("ISA must have exactly 16 elements, found {}", count),
             );
         }
         self.state = ValidationState::InInterchange;
@@ -257,16 +255,14 @@ impl Snip1Validator {
                 alloc::format!("GS segment outside of interchange"),
             );
         }
-        if segment.element_count < 8 {
+        let count = segment.element_count();
+        if count < 8 {
             self.add_error(
                 Severity::Error,
                 ErrorKind::InvalidSyntax,
                 segment,
                 None,
-                alloc::format!(
-                    "GS must have at least 8 elements, found {}",
-                    segment.element_count
-                ),
+                alloc::format!("GS must have at least 8 elements, found {}", count),
             );
         }
         self.state = ValidationState::InGroup;
@@ -282,7 +278,8 @@ impl Snip1Validator {
                 alloc::format!("ST segment outside of functional group"),
             );
         }
-        if segment.element_count < 2 {
+        let count = segment.element_count();
+        if count < 2 {
             self.add_error(
                 Severity::Error,
                 ErrorKind::InvalidSyntax,
@@ -627,9 +624,7 @@ impl Default for ValidationSuite {
 }
 
 impl SegmentHandler for ValidationSuite {
-    type Error = ParserError;
-
-    fn handle(&mut self, segment: &Segment) -> Result<(), Self::Error> {
+    fn handle(&mut self, segment: &Segment) -> Result<(), segment::Halt> {
         // Run all validators
         for validator in &mut self.validators {
             validator.validate(segment);

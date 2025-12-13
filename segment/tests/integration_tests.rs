@@ -1,4 +1,4 @@
-use segment::{Parser, ParserError, Segment, SegmentHandler};
+use segment::{Parser, Halt, Segment, SegmentHandler};
 
 /// Minimal handler that just counts segments
 struct CountingHandler {
@@ -12,9 +12,7 @@ impl CountingHandler {
 }
 
 impl SegmentHandler for CountingHandler {
-    type Error = ParserError;
-
-    fn handle(&mut self, _segment: &Segment) -> core::result::Result<(), Self::Error> {
+    fn handle(&mut self, _segment: &Segment) -> core::result::Result<(), Halt> {
         self.count += 1;
         Ok(())
     }
@@ -55,7 +53,7 @@ fn test_incomplete_isa() {
     let mut handler = CountingHandler::new();
 
     let result = parser.parse_segment(partial_isa, &mut handler);
-    assert_eq!(result, Err(ParserError::Incomplete));
+    assert_eq!(result, Err(Halt));
 }
 
 #[test]
@@ -67,19 +65,23 @@ fn test_incomplete_regular_segment() {
     let partial_st = b"ST*837*0001";
 
     let result = parser.parse_segment(partial_st, &mut handler);
-    assert_eq!(result, Err(ParserError::Incomplete));
+    assert_eq!(result, Err(Halt));
 }
 
 #[test]
 fn test_invalid_segment_id() {
+    // Parser no longer validates segment IDs - that's the validator's job
+    // Parser just parses the structure
     let mut parser = Parser::new();
     parser.set_delimiters(segment::Delimiters::default());
 
     let mut handler = CountingHandler::new();
     let bad_segment = b"1*element~";
 
+    // Parser should successfully parse the structure
     let result = parser.parse_segment(bad_segment, &mut handler);
-    assert_eq!(result, Err(ParserError::InvalidSegmentId));
+    assert!(result.is_ok());
+    assert_eq!(handler.count, 1);
 }
 
 #[test]
@@ -119,9 +121,7 @@ fn test_segment_element_access() {
     }
 
     impl SegmentHandler for ElementCaptureHandler {
-        type Error = ParserError;
-
-        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
+        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
             if let Some(elem) = segment.element(5) {
                 self.element_5 = Some(elem.as_bytes().to_vec());
                 self.captured = true;
@@ -196,11 +196,13 @@ fn test_required_element_missing() {
     struct RequiredElementHandler;
 
     impl SegmentHandler for RequiredElementHandler {
-        type Error = ParserError;
-
-        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
+        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
             // Try to access element that doesn't exist
-            segment.required_element(100)?;
+            // Since required_element returns ParserError, not Halt, we can't use ?
+            // Instead, return Halt if element is missing
+            if segment.required_element(100).is_err() {
+                return Err(Halt);
+            }
             Ok(())
         }
     }
@@ -209,7 +211,8 @@ fn test_required_element_missing() {
     let mut handler = RequiredElementHandler;
 
     let result = parser.parse_segment(x12_data, &mut handler);
-    assert_eq!(result, Err(ParserError::MissingRequiredElement));
+    // Handler will get ParserError but parser returns Halt
+    assert!(result.is_err());
 }
 
 #[test]
@@ -235,9 +238,7 @@ fn test_utf8_element_conversion() {
     }
 
     impl SegmentHandler for Utf8Handler {
-        type Error = ParserError;
-
-        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
+        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
             if let Some(elem) = segment.element(5) {
                 if let Some(s) = elem.as_str() {
                     if s.contains("SENDER") {
@@ -260,26 +261,33 @@ fn test_utf8_element_conversion() {
 
 #[test]
 fn test_segment_id_validation() {
+    // Parser no longer validates segment ID format - that's the validator's job
+    // Parser just parses structure regardless of segment ID validity
     let mut parser = Parser::new();
     parser.set_delimiters(segment::Delimiters::default());
 
     let mut handler = CountingHandler::new();
 
-    // Too short
+    // All segment IDs should parse successfully
+    // Validation of ID format happens in validators, not parser
+    
+    // One character
     let result = parser.parse_segment(b"A*element~", &mut handler);
-    assert!(result.is_err());
+    assert!(result.is_ok());
 
-    // Too long
+    // Four characters
     let result = parser.parse_segment(b"ABCD*element~", &mut handler);
-    assert!(result.is_err());
+    assert!(result.is_ok());
 
-    // Valid 2-char
+    // Two characters
     let result = parser.parse_segment(b"ST*element~", &mut handler);
     assert!(result.is_ok());
 
-    // Valid 3-char
-    let result = parser.parse_segment(b"ISA*element~", &mut handler);
+    // Three characters
+    let result = parser.parse_segment(b"NM1*element~", &mut handler);
     assert!(result.is_ok());
+    
+    assert_eq!(handler.count, 4);
 }
 
 #[test]
@@ -288,7 +296,7 @@ fn test_empty_buffer() {
     let mut handler = CountingHandler::new();
 
     let result = parser.parse_segment(b"", &mut handler);
-    assert_eq!(result, Err(ParserError::Incomplete));
+    assert_eq!(result, Err(Halt));
 }
 
 #[test]
@@ -312,10 +320,8 @@ fn test_segment_with_empty_elements() {
     }
 
     impl SegmentHandler for ElementCountHandler {
-        type Error = ParserError;
-
-        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
-            self.count = segment.element_count;
+        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
+            self.count = segment.element_count();
             Ok(())
         }
     }

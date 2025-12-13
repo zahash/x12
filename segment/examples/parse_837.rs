@@ -1,4 +1,4 @@
-use segment::{Parser, ParserError, Segment, SegmentHandler};
+use segment::{Parser, Halt, Segment, SegmentHandler};
 
 /// Example segment handler that validates X12 837 structure
 struct X12Handler {
@@ -22,17 +22,9 @@ impl X12Handler {
         }
     }
 
-    fn validate_isa(&self, segment: &Segment) -> core::result::Result<(), ParserError> {
-        // ISA must have 16 elements
-        if segment.element_count != 16 {
-            return Err(ParserError::InvalidElementCount);
-        }
-
-        // Validate ISA05/ISA07 (Interchange ID Qualifiers)
-        let isa05 = segment.required_element(4)?;
-        if isa05.as_bytes().len() != 2 {
-            return Err(ParserError::InvalidSegment);
-        }
+    fn validate_isa(&self, segment: &Segment) {
+        // Just print ISA information
+        // Validation is done by validators, not parsers
 
         println!("ISA: Interchange Control Header");
         println!(
@@ -49,19 +41,12 @@ impl X12Handler {
             "  Control Number: {:?}",
             segment.element(12).and_then(|e| e.as_str())
         );
-
-        Ok(())
     }
 
-    fn validate_gs(&self, segment: &Segment) -> core::result::Result<(), ParserError> {
-        // GS must have at least 8 elements
-        if segment.element_count < 8 {
-            return Err(ParserError::InvalidElementCount);
-        }
-
-        let functional_id = segment.required_element(0)?;
+    fn validate_gs(&self, segment: &Segment) {
+        let functional_id = segment.element(0);
         println!("GS: Functional Group Header");
-        println!("  Functional ID Code: {:?}", functional_id.as_str());
+        println!("  Functional ID Code: {:?}", functional_id.and_then(|e| e.as_str()));
         println!(
             "  Application Sender: {:?}",
             segment.element(1).and_then(|e| e.as_str())
@@ -75,32 +60,25 @@ impl X12Handler {
             "  Control Number: {:?}",
             segment.element(5).and_then(|e| e.as_str())
         );
-
-        Ok(())
     }
 
-    fn validate_st(&self, segment: &Segment) -> core::result::Result<(), ParserError> {
-        // ST must have at least 2 elements
-        if segment.element_count < 2 {
-            return Err(ParserError::InvalidElementCount);
-        }
-
-        let transaction_set = segment.required_element(0)?;
-        let control_number = segment.required_element(1)?;
+    fn validate_st(&self, segment: &Segment) {
+        let transaction_set = segment.element(0);
+        let control_number = segment.element(1);
 
         println!("ST: Transaction Set Header");
-        println!("  Transaction Set ID: {:?}", transaction_set.as_str());
-        println!("  Control Number: {:?}", control_number.as_str());
+        println!("  Transaction Set ID: {:?}", transaction_set.and_then(|e| e.as_str()));
+        println!("  Control Number: {:?}", control_number.and_then(|e| e.as_str()));
 
         // For 837, transaction set should be "837"
-        if transaction_set.as_bytes() == b"837" {
-            println!("  Type: Healthcare Claim (837)");
+        if let Some(ts) = transaction_set {
+            if ts.as_bytes() == b"837" {
+                println!("  Type: Healthcare Claim (837)");
+            }
         }
-
-        Ok(())
     }
 
-    fn handle_nm1(&self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn handle_nm1(&self, segment: &Segment) {
         // NM1 - Entity Identifier
         println!("NM1: Entity Identifier");
 
@@ -115,11 +93,9 @@ impl X12Handler {
         if let Some(name) = segment.element(2) {
             println!("  Name: {:?}", name.as_str());
         }
-
-        Ok(())
     }
 
-    fn handle_clm(&self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn handle_clm(&self, segment: &Segment) {
         // CLM - Claim Information
         println!("CLM: Claim Information");
 
@@ -130,20 +106,16 @@ impl X12Handler {
         if let Some(amount) = segment.element(1) {
             println!("  Claim Amount: {:?}", amount.as_str());
         }
-
-        Ok(())
     }
 }
 
 impl SegmentHandler for X12Handler {
-    type Error = ParserError;
-
-    fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
-        let id = segment.id_str().ok_or(ParserError::InvalidSegmentId)?;
+    fn handle(&mut self, segment: &Segment) -> core::result::Result<(), segment::Halt> {
+        let id = segment.id_str().unwrap_or("???");
 
         match id {
             "ISA" => {
-                self.validate_isa(segment)?;
+                self.validate_isa(segment);
                 self.in_interchange = true;
                 self.interchange_count += 1;
             }
@@ -152,10 +124,7 @@ impl SegmentHandler for X12Handler {
                 self.in_interchange = false;
             }
             "GS" => {
-                if !self.in_interchange {
-                    return Err(ParserError::InvalidSegment);
-                }
-                self.validate_gs(segment)?;
+                self.validate_gs(segment);
                 self.in_group = true;
                 self.group_count += 1;
             }
@@ -164,10 +133,7 @@ impl SegmentHandler for X12Handler {
                 self.in_group = false;
             }
             "ST" => {
-                if !self.in_group {
-                    return Err(ParserError::InvalidSegment);
-                }
-                self.validate_st(segment)?;
+                self.validate_st(segment);
                 self.in_transaction = true;
                 self.transaction_count += 1;
             }
@@ -182,7 +148,7 @@ impl SegmentHandler for X12Handler {
                 println!("REF: Reference Identification");
             }
             "NM1" => {
-                self.handle_nm1(segment)?;
+                self.handle_nm1(segment);
             }
             "N3" => {
                 println!("N3: Address Information");
@@ -194,7 +160,7 @@ impl SegmentHandler for X12Handler {
                 println!("PER: Administrative Communications Contact");
             }
             "CLM" => {
-                self.handle_clm(segment)?;
+                self.handle_clm(segment);
             }
             "HI" => {
                 println!("HI: Health Care Diagnosis Code");
@@ -266,12 +232,8 @@ fn main() {
                     break;
                 }
             }
-            Err(ParserError::Incomplete) => {
-                println!("\nIncomplete segment, need more data");
-                break;
-            }
-            Err(e) => {
-                println!("\nError parsing segment: {:?}", e);
+            Err(Halt) => {
+                println!("\nParsing halted (incomplete segment or catastrophic error)");
                 break;
             }
         }

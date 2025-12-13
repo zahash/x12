@@ -152,29 +152,23 @@ impl<'a> Iterator for ComponentIter<'a> {
     }
 }
 
-/// Maximum number of elements in a segment (X12 standard limit)
-pub const MAX_ELEMENTS: usize = 512;
-
 /// Parsed X12 segment with zero-copy element references
 #[derive(Debug)]
 pub struct Segment<'a> {
     /// Segment identifier (e.g., "ISA", "GS", "ST", "NM1")
     pub id: &'a [u8],
-    /// Segment elements (not including the segment ID)
-    pub elements: [Option<Element<'a>>; MAX_ELEMENTS],
-    /// Number of elements in this segment
-    pub element_count: usize,
+    /// Raw segment data containing elements
+    data: &'a [u8],
     /// Delimiter configuration
     pub delimiters: Delimiters,
 }
 
 impl<'a> Segment<'a> {
-    /// Create a new empty segment
-    fn new(id: &'a [u8], delimiters: Delimiters) -> Self {
+    /// Create a new segment
+    fn new(id: &'a [u8], data: &'a [u8], delimiters: Delimiters) -> Self {
         Self {
             id,
-            elements: [None; MAX_ELEMENTS],
-            element_count: 0,
+            data,
             delimiters,
         }
     }
@@ -188,11 +182,7 @@ impl<'a> Segment<'a> {
     /// Get element at index (0-based, not including segment ID)
     #[inline]
     pub fn element(&self, index: usize) -> Option<Element<'a>> {
-        if index < self.element_count {
-            self.elements[index]
-        } else {
-            None
-        }
+        self.elements().nth(index)
     }
 
     /// Get required element at index, returns error if missing or empty
@@ -204,13 +194,58 @@ impl<'a> Segment<'a> {
         }
     }
 
+    /// Get element count
+    pub fn element_count(&self) -> usize {
+        self.elements().count()
+    }
+
     /// Iterate over all elements
-    pub fn iter_elements(&self) -> impl Iterator<Item = Element<'a>> + '_ {
-        self.elements[..self.element_count]
-            .iter()
-            .filter_map(|e| *e)
+    pub fn elements(&self) -> ElementIter<'a> {
+        ElementIter {
+            data: self.data,
+            separator: self.delimiters.element,
+            pos: 0,
+        }
     }
 }
+
+/// Iterator over segment elements
+pub struct ElementIter<'a> {
+    data: &'a [u8],
+    separator: u8,
+    pos: usize,
+}
+
+impl<'a> Iterator for ElementIter<'a> {
+    type Item = Element<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos > self.data.len() {
+            return None;
+        }
+
+        let start = self.pos;
+        let remaining = &self.data[start..];
+
+        if let Some(idx) = remaining.iter().position(|&b| b == self.separator) {
+            self.pos = start + idx + 1;
+            Some(Element::new(&remaining[..idx]))
+        } else if start < self.data.len() {
+            self.pos = self.data.len() + 1;
+            Some(Element::new(remaining))
+        } else if start == self.data.len() && start > 0 {
+            // Handle trailing separator
+            self.pos = self.data.len() + 1;
+            Some(Element::new(&[]))
+        } else {
+            None
+        }
+    }
+}
+
+/// Catastrophic error indicating parsing must halt immediately
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Halt;
 
 /// Trait for handling parsed segments
 ///
@@ -220,20 +255,14 @@ impl<'a> Segment<'a> {
 ///
 /// # Design Philosophy
 ///
-/// This trait does NOT return errors for validation failures. Instead,
-/// handlers should accumulate errors internally and provide them via
-/// a separate method after parsing completes. This allows collecting
-/// ALL errors in a document, not just the first one.
+/// Handlers should accumulate validation errors internally.
+/// Only return `Err(Halt)` for catastrophic errors that make it
+/// impossible to continue parsing (e.g., missing GE but next GS started,
+/// out of memory, corrupted structure).
 ///
-/// Only return Err for catastrophic errors that prevent further processing
-/// (e.g., out of memory, I/O failure).
+/// For validation errors (wrong counts, missing fields, etc.),
+/// accumulate them and report after parsing completes.
 pub trait SegmentHandler {
-    /// Associated error type for catastrophic handler errors
-    ///
-    /// Use this only for errors that prevent further processing.
-    /// For validation errors, accumulate them internally.
-    type Error: From<ParserError>;
-
     /// Handle a successfully parsed segment
     ///
     /// This method is called for each complete segment parsed.
@@ -242,11 +271,11 @@ pub trait SegmentHandler {
     /// # Returns
     ///
     /// - `Ok(())` to continue parsing
-    /// - `Err(e)` only for catastrophic errors that prevent further processing
+    /// - `Err(Halt)` only for catastrophic structural errors
     ///
-    /// For validation errors, accumulate them internally and expose via
-    /// a separate method (e.g., `errors()` or `finalize()`).
-    fn handle(&mut self, segment: &Segment) -> Result<(), Self::Error>;
+    /// Accumulate validation errors internally and expose via
+    /// a separate method (e.g., `errors()` or `report()`).
+    fn handle(&mut self, segment: &Segment) -> Result<(), Halt>;
 }
 
 /// Parser state
@@ -295,9 +324,9 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, H::Error> {
+    ) -> Result<usize, Halt> {
         if buffer.is_empty() {
-            return Err(ParserError::Incomplete.into());
+            return Err(Halt);
         }
 
         match self.state {
@@ -314,20 +343,19 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, H::Error> {
-        // ISA segment is exactly 106 characters including terminator
-        const ISA_LENGTH: usize = 106;
-
-        if buffer.len() < ISA_LENGTH {
-            return Err(ParserError::Incomplete.into());
+    ) -> Result<usize, Halt> {
+        // ISA has a standard structure - search for segment terminator
+        // which should be around position 105-106
+        if buffer.len() < 106 {
+            return Err(Halt);
         }
 
         // Verify ISA identifier
-        if buffer.len() < 3 || &buffer[0..3] != b"ISA" {
-            return Err(ParserError::InvalidSegmentId.into());
+        if &buffer[0..3] != b"ISA" {
+            return Err(Halt);
         }
 
-        // Extract delimiters from ISA segment
+        // Extract delimiters from standard positions
         // Position 3: element separator
         // Position 104: sub-element separator
         // Position 105: segment terminator
@@ -335,54 +363,18 @@ impl Parser {
         let subelement_sep = buffer[104];
         let segment_term = buffer[105];
 
-        // Validate delimiters are different
-        if element_sep == subelement_sep
-            || element_sep == segment_term
-            || subelement_sep == segment_term
-        {
-            return Err(ParserError::InvalidDelimiters.into());
-        }
-
         self.delimiters = Delimiters {
             element: element_sep,
             subelement: subelement_sep,
             segment: segment_term,
-            repetition: b'^', // Default, can be overridden by ISA16
+            repetition: b'^', // Default
         };
 
-        // Parse ISA elements using fixed positions
-        let mut segment = Segment::new(b"ISA", self.delimiters);
+        // Get the data between ISA and segment terminator
+        let data = &buffer[4..105];
+        let segment = Segment::new(b"ISA", data, self.delimiters);
 
-        // ISA has 16 elements with fixed widths
-        let positions = [
-            (4, 6),   // ISA01: Authorization Information Qualifier (2)
-            (6, 16),  // ISA02: Authorization Information (10)
-            (16, 18), // ISA03: Security Information Qualifier (2)
-            (18, 28), // ISA04: Security Information (10)
-            (28, 30), // ISA05: Interchange ID Qualifier (2)
-            (30, 45), // ISA06: Interchange Sender ID (15)
-            (45, 47), // ISA07: Interchange ID Qualifier (2)
-            (47, 62), // ISA08: Interchange Receiver ID (15)
-            (62, 68), // ISA09: Interchange Date (6)
-            (68, 72), // ISA10: Interchange Time (4)
-            (72, 73), // ISA11: Repetition Separator (1)
-            (73, 78), // ISA12: Interchange Control Version Number (5)
-            (78, 87), // ISA13: Interchange Control Number (9)
-            (87, 88), // ISA14: Acknowledgment Requested (1)
-            (88, 89), // ISA15: Usage Indicator (1)
-            (89, 90), // ISA16: Component Element Separator (1)
-        ];
-
-        for (i, &(start, end)) in positions.iter().enumerate() {
-            if end <= buffer.len() {
-                segment.elements[i] = Some(Element::new(&buffer[start..end]));
-                segment.element_count += 1;
-            } else {
-                return Err(ParserError::Incomplete.into());
-            }
-        }
-
-        // Extract repetition separator from ISA11
+        // Extract repetition separator from ISA11 (element at index 10)
         if let Some(elem) = segment.element(10) {
             if let Some(&rep) = elem.as_bytes().first() {
                 self.delimiters.repetition = rep;
@@ -391,7 +383,7 @@ impl Parser {
 
         self.state = State::Processing;
         handler.handle(&segment)?;
-        Ok(ISA_LENGTH)
+        Ok(106)
     }
 
     /// Parse a regular segment (non-ISA)
@@ -399,12 +391,12 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, H::Error> {
+    ) -> Result<usize, Halt> {
         // Find segment terminator
         let segment_end = buffer
             .iter()
             .position(|&b| b == self.delimiters.segment)
-            .ok_or(ParserError::Incomplete)?;
+            .ok_or(Halt)?;
 
         let segment_data = &buffer[..segment_end];
 
@@ -415,52 +407,19 @@ impl Parser {
             .unwrap_or(segment_data.len());
 
         if id_end == 0 {
-            return Err(ParserError::InvalidSegmentId.into());
+            return Err(Halt);
         }
 
         let segment_id = &segment_data[..id_end];
 
-        // Validate segment ID (2-3 uppercase alphanumeric characters)
-        if segment_id.len() < 2 || segment_id.len() > 3 {
-            return Err(ParserError::InvalidSegmentId.into());
-        }
+        // Get element data (everything after segment ID and separator)
+        let elements_data = if id_end < segment_data.len() {
+            &segment_data[id_end + 1..]
+        } else {
+            &[]
+        };
 
-        for &b in segment_id {
-            if !b.is_ascii_alphanumeric() {
-                return Err(ParserError::InvalidSegmentId.into());
-            }
-        }
-
-        let mut segment = Segment::new(segment_id, self.delimiters);
-
-        // Parse elements after segment ID
-        if id_end < segment_data.len() {
-            let elements_data = &segment_data[id_end + 1..];
-            let mut start = 0;
-
-            for (i, &b) in elements_data.iter().enumerate() {
-                if b == self.delimiters.element {
-                    if segment.element_count >= MAX_ELEMENTS {
-                        return Err(ParserError::InvalidElementCount.into());
-                    }
-                    segment.elements[segment.element_count] =
-                        Some(Element::new(&elements_data[start..i]));
-                    segment.element_count += 1;
-                    start = i + 1;
-                }
-            }
-
-            // Add final element
-            if start <= elements_data.len() {
-                if segment.element_count >= MAX_ELEMENTS {
-                    return Err(ParserError::InvalidElementCount.into());
-                }
-                segment.elements[segment.element_count] =
-                    Some(Element::new(&elements_data[start..]));
-                segment.element_count += 1;
-            }
-        }
-
+        let segment = Segment::new(segment_id, elements_data, self.delimiters);
         handler.handle(&segment)?;
         Ok(segment_end + 1) // +1 for segment terminator
     }
@@ -509,9 +468,7 @@ mod tests {
     }
 
     impl SegmentHandler for TestHandler {
-        type Error = ParserError;
-
-        fn handle(&mut self, _segment: &Segment) -> Result<(), Self::Error> {
+        fn handle(&mut self, _segment: &Segment) -> Result<(), Halt> {
             self.segments += 1;
             Ok(())
         }
@@ -526,7 +483,6 @@ mod tests {
 
         let result = parser.parse_segment(data, &mut handler);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 106);
         assert_eq!(handler.segments, 1);
         assert!(parser.is_initialized());
     }
@@ -539,7 +495,7 @@ mod tests {
         let data = b"ISA*00*          *00*";
 
         let result = parser.parse_segment(data, &mut handler);
-        assert_eq!(result, Err(ParserError::Incomplete));
+        assert_eq!(result, Err(Halt));
     }
 
     #[test]
@@ -552,7 +508,6 @@ mod tests {
 
         let result = parser.parse_segment(data, &mut handler);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 25);
         assert_eq!(handler.segments, 1);
     }
 

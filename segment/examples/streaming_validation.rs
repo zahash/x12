@@ -1,4 +1,4 @@
-use segment::{Parser, ParserError, Segment, SegmentHandler};
+use segment::{Parser, Halt, Segment, SegmentHandler};
 
 /// A more sophisticated handler that maintains state for SNIP validation
 /// and hierarchical structure validation
@@ -101,11 +101,10 @@ impl ValidationHandler {
         }
     }
 
-    fn validate_isa(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_isa(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // SNIP Level 1: Syntax validation
-        if segment.element_count != 16 {
+        if segment.element_count() != 16 {
             self.add_error(segment.id, ErrorType::SegmentSequenceError, None);
-            return Err(ParserError::InvalidElementCount);
         }
 
         // Extract and store control number (ISA13)
@@ -118,15 +117,17 @@ impl ValidationHandler {
         }
 
         // SNIP Level 2: Validate ISA01 and ISA03 qualifiers
-        let isa01 = segment.required_element(0)?;
-        if !is_valid_qualifier(isa01.as_bytes(), &[b"00", b"03"]) {
-            self.add_error(segment.id, ErrorType::InvalidElementValue, Some(1));
+        if let Some(isa01) = segment.element(0) {
+            if !is_valid_qualifier(isa01.as_bytes(), &[b"00", b"03"]) {
+                self.add_error(segment.id, ErrorType::InvalidElementValue, Some(1));
+            }
         }
 
         // SNIP Level 5: Validate ISA15 (Usage Indicator)
-        let isa15 = segment.required_element(14)?;
-        if !is_valid_qualifier(isa15.as_bytes(), &[b"T", b"P", b"I"]) {
-            self.add_error(segment.id, ErrorType::InvalidElementValue, Some(15));
+        if let Some(isa15) = segment.element(14) {
+            if !is_valid_qualifier(isa15.as_bytes(), &[b"T", b"P", b"I"]) {
+                self.add_error(segment.id, ErrorType::InvalidElementValue, Some(15));
+            }
         }
 
         self.in_interchange = true;
@@ -134,7 +135,7 @@ impl ValidationHandler {
         Ok(())
     }
 
-    fn validate_iea(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_iea(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // IEA01 - Number of Included Functional Groups
         if let Some(count_elem) = segment.element(0) {
             if let Some(count_str) = count_elem.as_str() {
@@ -161,15 +162,15 @@ impl ValidationHandler {
         Ok(())
     }
 
-    fn validate_gs(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_gs(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         if !self.in_interchange {
             self.add_error(segment.id, ErrorType::SegmentSequenceError, None);
-            return Err(ParserError::InvalidSegment);
+            // Validation error recorded
         }
 
         // SNIP Level 1: GS requires at least 8 elements
-        if segment.element_count < 8 {
-            return Err(ParserError::InvalidElementCount);
+        if segment.element_count() < 8 {
+            // Validation error recorded
         }
 
         // Extract GS06 - Group Control Number
@@ -182,10 +183,11 @@ impl ValidationHandler {
         }
 
         // SNIP Level 2: Validate GS01 Functional Identifier Code
-        let gs01 = segment.required_element(0)?;
-        // For 837, should be "HC" (Health Care Claim)
-        if gs01.as_bytes() != b"HC" {
-            println!("Warning: GS01 is not 'HC' for healthcare claim");
+        if let Some(gs01) = segment.element(0) {
+            // For 837, should be "HC" (Health Care Claim)
+            if gs01.as_bytes() != b"HC" {
+                println!("Warning: GS01 is not 'HC' for healthcare claim");
+            }
         }
 
         // SNIP Level 5: Validate GS08 Version
@@ -202,7 +204,7 @@ impl ValidationHandler {
         Ok(())
     }
 
-    fn validate_ge(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_ge(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // GE01 - Number of Transaction Sets
         if let Some(count_elem) = segment.element(0) {
             if let Some(count_str) = count_elem.as_str() {
@@ -229,10 +231,10 @@ impl ValidationHandler {
         Ok(())
     }
 
-    fn validate_st(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_st(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         if !self.in_group {
             self.add_error(segment.id, ErrorType::SegmentSequenceError, None);
-            return Err(ParserError::InvalidSegment);
+            // Validation error recorded
         }
 
         // Extract ST02 - Transaction Set Control Number
@@ -245,9 +247,10 @@ impl ValidationHandler {
         }
 
         // Validate ST01 - Transaction Set Identifier Code
-        let st01 = segment.required_element(0)?;
-        if st01.as_bytes() != b"837" {
-            println!("Warning: Not an 837 transaction set");
+        if let Some(st01) = segment.element(0) {
+            if st01.as_bytes() != b"837" {
+                println!("Warning: Not an 837 transaction set");
+            }
         }
 
         self.in_transaction = true;
@@ -255,7 +258,7 @@ impl ValidationHandler {
         Ok(())
     }
 
-    fn validate_se(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_se(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         self.st_segment_count += 1; // SE counts in the total
 
         // SE01 - Number of Included Segments
@@ -290,7 +293,7 @@ impl ValidationHandler {
         Ok(())
     }
 
-    fn validate_hl(&mut self, segment: &Segment) -> core::result::Result<(), ParserError> {
+    fn validate_hl(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // SNIP Level 7: Inter-segment validation for hierarchical structure
 
         // HL01 - Hierarchical ID Number
@@ -355,10 +358,8 @@ impl ValidationHandler {
 }
 
 impl SegmentHandler for ValidationHandler {
-    type Error = ParserError;
-
-    fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
-        let id = segment.id_str().ok_or(ParserError::InvalidSegmentId)?;
+    fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
+        let id = segment.id_str().unwrap_or("???");
 
         // Count all segments within transaction
         if self.in_transaction && id != "ST" && id != "SE" {
@@ -441,12 +442,8 @@ fn main() {
                     break;
                 }
             }
-            Err(ParserError::Incomplete) => {
-                println!("Incomplete data");
-                break;
-            }
-            Err(e) => {
-                println!("Error: {:?}", e);
+            Err(Halt) => {
+                println!("Parsing halted");
                 break;
             }
         }

@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{Read, BufReader};
 use std::path::Path;
 
-use segment::{Parser, ParserError, SegmentHandler};
+use segment::{Parser, Halt, SegmentHandler};
 
 /// Configuration for chunked file parsing
 #[derive(Debug, Clone)]
@@ -79,16 +79,14 @@ impl<H: SegmentHandler> ChunkedParser<H> {
     }
 
     /// Parse a file from a path
-    pub fn parse_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), H::Error> {
-        let file = File::open(path).map_err(|_| {
-            ParserError::InvalidSegment // Convert IO error
-        })?;
+    pub fn parse_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Halt> {
+        let file = File::open(path).map_err(|_| Halt)?;
         let mut reader = BufReader::new(file);
         self.parse_reader(&mut reader)
     }
 
     /// Parse from a reader
-    pub fn parse_reader<R: Read>(&mut self, reader: &mut R) -> Result<(), H::Error> {
+    pub fn parse_reader<R: Read>(&mut self, reader: &mut R) -> Result<(), Halt> {
         loop {
             // Compact buffer if needed
             if self.buffer_start > self.buffer.len() / 2 && self.buffer_start > 0 {
@@ -99,7 +97,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
 
             // Read more data
             let bytes_read = reader.read(&mut self.buffer[self.buffer_end..])
-                .map_err(|_| ParserError::InvalidSegment)?;
+                .map_err(|_| Halt)?;
             
             self.stats.bytes_read += bytes_read as u64;
 
@@ -119,7 +117,6 @@ impl<H: SegmentHandler> ChunkedParser<H> {
                 }
 
                 // Try to parse a segment
-                // We handle Incomplete specially by retrying with more data
                 let result = self.parser.parse_segment(unparsed, &mut self.handler);
                 
                 match result {
@@ -127,17 +124,12 @@ impl<H: SegmentHandler> ChunkedParser<H> {
                         self.buffer_start += consumed;
                         self.stats.segments_parsed += 1;
                     }
-                    Err(e) => {
-                        // Since H::Error: From<ParserError>, we know the error
-                        // came from either the parser or handler
-                        // 
-                        // Strategy: If we haven't consumed anything and there's
-                        // more data coming, assume Incomplete and retry with bigger buffer
-                        
+                    Err(Halt) => {
+                        // Parser couldn't parse - either incomplete or catastrophic error
                         let remaining = self.buffer_end - self.buffer_start;
                         
                         if bytes_read > 0 && remaining >= self.buffer.len() {
-                            // Buffer is full and we read data, likely Incomplete
+                            // Buffer is full and we read data, likely incomplete segment
                             // Try to resize buffer
                             self.resize_buffer()?;
                             break 'parse; // Retry with more data
@@ -146,7 +138,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
                             break 'parse;
                         } else {
                             // No more data, this is a real error
-                            return Err(e);
+                            return Err(Halt);
                         }
                     }
                 }
@@ -157,13 +149,13 @@ impl<H: SegmentHandler> ChunkedParser<H> {
     }
 
     /// Resize the buffer
-    fn resize_buffer(&mut self) -> Result<(), H::Error> {
+    fn resize_buffer(&mut self) -> Result<(), Halt> {
         let new_size = (self.buffer.len() * self.config.resize_multiplier)
             .min(self.config.max_buffer_size);
 
         if new_size == self.buffer.len() {
             // Can't resize further
-            return Err(ParserError::InvalidSegment.into());
+            return Err(Halt);
         }
 
         let remaining = self.buffer_end - self.buffer_start;
@@ -206,9 +198,7 @@ mod tests {
     }
 
     impl SegmentHandler for TestHandler {
-        type Error = ParserError;
-
-        fn handle(&mut self, _segment: &Segment) -> Result<(), Self::Error> {
+        fn handle(&mut self, _segment: &Segment) -> Result<(), Halt> {
             self.count += 1;
             Ok(())
         }
