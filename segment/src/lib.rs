@@ -228,8 +228,46 @@ pub trait SegmentHandler {
 }
 
 /// Catastrophic error indicating parsing must halt immediately
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Halt;
+///
+/// Contains context about what caused the unrecoverable error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Halt {
+    /// Human-readable error message
+    pub message: &'static str,
+}
+
+impl Halt {
+    /// Create a new Halt error with a message
+    #[inline]
+    pub const fn new(message: &'static str) -> Self {
+        Self { message }
+    }
+}
+
+/// Parser error type distinguishing recoverable from catastrophic errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParserError {
+    /// Need more data in buffer to complete parsing
+    ///
+    /// This is a recoverable error - the caller should:
+    /// 1. Grow the buffer (if possible)
+    /// 2. Read more data from the source
+    /// 3. Retry parsing
+    Incomplete,
+
+    /// Catastrophic error - parsing cannot continue
+    ///
+    /// This indicates a structural problem that makes it
+    /// impossible to continue parsing (e.g., invalid ISA header,
+    /// empty segment ID, handler returned error).
+    Halt(Halt),
+}
+
+impl From<Halt> for ParserError {
+    fn from(halt: Halt) -> Self {
+        ParserError::Halt(halt)
+    }
+}
 
 /// Parser state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,8 +305,13 @@ impl Parser {
     /// Parse one segment from the buffer and invoke handler
     ///
     /// Returns the number of bytes consumed on success.
-    /// Returns Err(Incomplete) if buffer doesn't contain a complete segment.
-    /// Returns other errors for parsing failures.
+    ///
+    /// # Errors
+    ///
+    /// - `ParserError::Incomplete` - Buffer doesn't contain a complete segment.
+    ///   Caller should grow buffer and read more data.
+    /// - `ParserError::Halt` - Catastrophic error (invalid structure, handler error).
+    ///   Parsing cannot continue.
     ///
     /// # Arguments
     /// * `buffer` - Byte slice containing X12 data
@@ -277,9 +320,9 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, Halt> {
+    ) -> Result<usize, ParserError> {
         if buffer.is_empty() {
-            return Err(Halt);
+            return Err(ParserError::Incomplete);
         }
 
         match self.state {
@@ -296,16 +339,18 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, Halt> {
+    ) -> Result<usize, ParserError> {
         // ISA has a standard structure - search for segment terminator
         // which should be around position 105-106
         if buffer.len() < 106 {
-            return Err(Halt);
+            return Err(ParserError::Incomplete);
         }
 
         // Verify ISA identifier
         if &buffer[0..3] != b"ISA" {
-            return Err(Halt);
+            return Err(ParserError::Halt(Halt::new(
+                "Invalid ISA header: first three bytes must be 'ISA'",
+            )));
         }
 
         // Extract delimiters from standard positions
@@ -335,7 +380,7 @@ impl Parser {
         }
 
         self.state = State::Processing;
-        handler.handle(&segment)?;
+        handler.handle(&segment).map_err(ParserError::Halt)?;
         Ok(106)
     }
 
@@ -344,12 +389,12 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, Halt> {
+    ) -> Result<usize, ParserError> {
         // Find segment terminator
         let segment_end = buffer
             .iter()
             .position(|&b| b == self.delimiters.segment)
-            .ok_or(Halt)?;
+            .ok_or(ParserError::Incomplete)?;
 
         let segment_data = &buffer[..segment_end];
 
@@ -360,7 +405,9 @@ impl Parser {
             .unwrap_or(segment_data.len());
 
         if id_end == 0 {
-            return Err(Halt);
+            return Err(ParserError::Halt(Halt::new(
+                "Invalid segment: segment ID cannot be empty",
+            )));
         }
 
         let segment_id = &segment_data[..id_end];
@@ -373,7 +420,7 @@ impl Parser {
         };
 
         let segment = Segment::new(segment_id, elements_data, self.delimiters);
-        handler.handle(&segment)?;
+        handler.handle(&segment).map_err(ParserError::Halt)?;
         Ok(segment_end + 1) // +1 for segment terminator
     }
 
@@ -448,7 +495,7 @@ mod tests {
         let data = b"ISA*00*          *00*";
 
         let result = parser.parse_segment(data, &mut handler);
-        assert_eq!(result, Err(Halt));
+        assert_eq!(result, Err(ParserError::Incomplete));
     }
 
     #[test]

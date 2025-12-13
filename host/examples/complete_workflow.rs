@@ -83,8 +83,8 @@ fn main() {
     let start = std::time::Instant::now();
 
     // Parse file
-    if let Err(e) = parser.parse_file(path) {
-        eprintln!("Error: {:?}", e);
+    if let Err(halt) = parser.parse_file(path) {
+        eprintln!("Error: {}", halt.message);
         process::exit(1);
     }
 

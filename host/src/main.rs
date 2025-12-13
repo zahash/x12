@@ -145,8 +145,8 @@ fn main() {
                 }
             }
         }
-        Err(_) => {
-            eprintln!("Error: Parsing halted due to catastrophic error");
+        Err(halt) => {
+            eprintln!("Error: Parsing halted - {}", halt.message);
             process::exit(1);
         }
     }

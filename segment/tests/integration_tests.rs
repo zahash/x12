@@ -1,4 +1,4 @@
-use segment::{Halt, Parser, Segment, SegmentHandler};
+use segment::{Halt, Parser, ParserError, Segment, SegmentHandler};
 
 /// Minimal handler that just counts segments
 struct CountingHandler {
@@ -53,7 +53,7 @@ fn test_incomplete_isa() {
     let mut handler = CountingHandler::new();
 
     let result = parser.parse_segment(partial_isa, &mut handler);
-    assert_eq!(result, Err(Halt));
+    assert_eq!(result, Err(ParserError::Incomplete));
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn test_incomplete_regular_segment() {
     let partial_st = b"ST*837*0001";
 
     let result = parser.parse_segment(partial_st, &mut handler);
-    assert_eq!(result, Err(Halt));
+    assert_eq!(result, Err(ParserError::Incomplete));
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn test_empty_buffer() {
     let mut handler = CountingHandler::new();
 
     let result = parser.parse_segment(b"", &mut handler);
-    assert_eq!(result, Err(Halt));
+    assert_eq!(result, Err(ParserError::Incomplete));
 }
 
 #[test]

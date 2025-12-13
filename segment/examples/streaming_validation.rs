@@ -1,4 +1,4 @@
-use segment::{Halt, Parser, Segment, SegmentHandler};
+use segment::{Halt, Parser, ParserError, Segment, SegmentHandler};
 
 /// A more sophisticated handler that maintains state for SNIP validation
 /// and hierarchical structure validation
@@ -443,8 +443,12 @@ fn main() {
                     break;
                 }
             }
-            Err(Halt) => {
-                println!("Parsing halted");
+            Err(ParserError::Incomplete) => {
+                println!("Incomplete segment - need more data");
+                break;
+            }
+            Err(ParserError::Halt(halt)) => {
+                println!("Parsing halted: {}", halt.message);
                 break;
             }
         }

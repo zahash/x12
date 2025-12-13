@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use segment::{Halt, Parser, SegmentHandler};
+use segment::{Halt, Parser, ParserError, SegmentHandler};
 
 /// Configuration for chunked file parsing
 #[derive(Debug, Clone)]
@@ -80,7 +80,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
 
     /// Parse a file from a path
     pub fn parse_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Halt> {
-        let file = File::open(path).map_err(|_| Halt)?;
+        let file = File::open(path).map_err(|_| Halt::new("Failed to open file"))?;
         let mut reader = BufReader::new(file);
         self.parse_reader(&mut reader)
     }
@@ -99,7 +99,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
             // Read more data
             let bytes_read = reader
                 .read(&mut self.buffer[self.buffer_end..])
-                .map_err(|_| Halt)?;
+                .map_err(|_| Halt::new("Failed to read from file"))?;
 
             self.stats.bytes_read += bytes_read as u64;
 
@@ -119,29 +119,31 @@ impl<H: SegmentHandler> ChunkedParser<H> {
                 }
 
                 // Try to parse a segment
-                let result = self.parser.parse_segment(unparsed, &mut self.handler);
-
-                match result {
+                match self.parser.parse_segment(unparsed, &mut self.handler) {
                     Ok(consumed) => {
                         self.buffer_start += consumed;
                         self.stats.segments_parsed += 1;
                     }
-                    Err(Halt) => {
-                        // Parser couldn't parse - either incomplete or catastrophic error
+                    Err(ParserError::Incomplete) => {
+                        // Need more data - try to get more
                         let remaining = self.buffer_end - self.buffer_start;
 
-                        if bytes_read > 0 && remaining >= self.buffer.len() {
-                            // Buffer is full and we read data, likely incomplete segment
-                            // Try to resize buffer
-                            self.resize_buffer()?;
-                            break 'parse; // Retry with more data
-                        } else if bytes_read > 0 {
-                            // More data available, try reading more
-                            break 'parse;
-                        } else {
-                            // No more data, this is a real error
-                            return Err(Halt);
+                        if bytes_read == 0 {
+                            // No more data available and segment incomplete
+                            return Err(Halt::new("Incomplete segment at end of file"));
                         }
+
+                        if remaining >= self.buffer.len() {
+                            // Buffer is full, need to resize
+                            self.resize_buffer()?;
+                        }
+
+                        // Break to read more data
+                        break 'parse;
+                    }
+                    Err(ParserError::Halt(halt)) => {
+                        // Catastrophic error - cannot continue
+                        return Err(halt);
                     }
                 }
             }
@@ -157,7 +159,9 @@ impl<H: SegmentHandler> ChunkedParser<H> {
 
         if new_size == self.buffer.len() {
             // Can't resize further
-            return Err(Halt);
+            return Err(Halt::new(
+                "Buffer at maximum size but segment still incomplete",
+            ));
         }
 
         let remaining = self.buffer_end - self.buffer_start;

@@ -1,4 +1,4 @@
-use segment::{Halt, Parser, Segment, SegmentHandler};
+use segment::{Parser, ParserError, Segment, SegmentHandler};
 
 /// Example segment handler that validates X12 837 structure
 struct X12Handler {
@@ -241,8 +241,12 @@ fn main() {
                     break;
                 }
             }
-            Err(Halt) => {
-                println!("\nParsing halted (incomplete segment or catastrophic error)");
+            Err(ParserError::Incomplete) => {
+                println!("\nIncomplete segment - need more data");
+                break;
+            }
+            Err(ParserError::Halt(halt)) => {
+                println!("\nParsing halted: {}", halt.message);
                 break;
             }
         }
