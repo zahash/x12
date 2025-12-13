@@ -1,0 +1,15 @@
+[package]
+name = "x12-host"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Host application for parsing large X12 files"
+
+[dependencies]
+segment = { path = "../segment", features = ["std"] }
+x12-validation = { path = "../validation", features = ["std"] }
+
+[[bin]]
+name = "x12-parse"
+path = "src/main.rs"

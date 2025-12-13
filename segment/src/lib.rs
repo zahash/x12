@@ -52,9 +52,6 @@ pub enum ParserError {
     MissingRequiredElement,
 }
 
-/// Result type for parser operations
-pub type Result<T> = core::result::Result<T, ParserError>;
-
 /// X12 delimiters extracted from ISA segment
 #[derive(Debug, Clone, Copy)]
 pub struct Delimiters {
@@ -200,7 +197,7 @@ impl<'a> Segment<'a> {
 
     /// Get required element at index, returns error if missing or empty
     #[inline]
-    pub fn required_element(&self, index: usize) -> Result<Element<'a>> {
+    pub fn required_element(&self, index: usize) -> Result<Element<'a>, ParserError> {
         match self.element(index) {
             Some(elem) if !elem.is_empty() => Ok(elem),
             _ => Err(ParserError::MissingRequiredElement),
@@ -220,8 +217,21 @@ impl<'a> Segment<'a> {
 /// Implement this trait to process segments as they are parsed.
 /// The segment lifetime is tied to the buffer, so all processing
 /// must complete before the buffer is modified.
+///
+/// # Design Philosophy
+///
+/// This trait does NOT return errors for validation failures. Instead,
+/// handlers should accumulate errors internally and provide them via
+/// a separate method after parsing completes. This allows collecting
+/// ALL errors in a document, not just the first one.
+///
+/// Only return Err for catastrophic errors that prevent further processing
+/// (e.g., out of memory, I/O failure).
 pub trait SegmentHandler {
-    /// Associated error type for handler-specific errors
+    /// Associated error type for catastrophic handler errors
+    ///
+    /// Use this only for errors that prevent further processing.
+    /// For validation errors, accumulate them internally.
     type Error: From<ParserError>;
 
     /// Handle a successfully parsed segment
@@ -229,8 +239,14 @@ pub trait SegmentHandler {
     /// This method is called for each complete segment parsed.
     /// The segment reference is only valid during this call.
     ///
-    /// Return Ok(()) to continue parsing, or Err(e) to stop.
-    fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error>;
+    /// # Returns
+    ///
+    /// - `Ok(())` to continue parsing
+    /// - `Err(e)` only for catastrophic errors that prevent further processing
+    ///
+    /// For validation errors, accumulate them internally and expose via
+    /// a separate method (e.g., `errors()` or `finalize()`).
+    fn handle(&mut self, segment: &Segment) -> Result<(), Self::Error>;
 }
 
 /// Parser state
@@ -279,7 +295,7 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> core::result::Result<usize, H::Error> {
+    ) -> Result<usize, H::Error> {
         if buffer.is_empty() {
             return Err(ParserError::Incomplete.into());
         }
@@ -298,7 +314,7 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> core::result::Result<usize, H::Error> {
+    ) -> Result<usize, H::Error> {
         // ISA segment is exactly 106 characters including terminator
         const ISA_LENGTH: usize = 106;
 
@@ -383,7 +399,7 @@ impl Parser {
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> core::result::Result<usize, H::Error> {
+    ) -> Result<usize, H::Error> {
         // Find segment terminator
         let segment_end = buffer
             .iter()
@@ -495,7 +511,7 @@ mod tests {
     impl SegmentHandler for TestHandler {
         type Error = ParserError;
 
-        fn handle(&mut self, _segment: &Segment) -> core::result::Result<(), Self::Error> {
+        fn handle(&mut self, _segment: &Segment) -> Result<(), Self::Error> {
             self.segments += 1;
             Ok(())
         }

@@ -1,0 +1,16 @@
+[package]
+name = "x12-validation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "SNIP 1-7 validation for X12 documents"
+keywords = ["x12", "validation", "edi", "snip"]
+categories = ["parsing", "no-std"]
+
+[dependencies]
+segment = { path = "../segment" }
+
+[features]
+default = []
+std = []

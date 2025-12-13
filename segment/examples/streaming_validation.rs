@@ -1,4 +1,4 @@
-use segment::{ParserError, Parser, Segment, SegmentHandler};
+use segment::{Parser, ParserError, Segment, SegmentHandler};
 
 /// A more sophisticated handler that maintains state for SNIP validation
 /// and hierarchical structure validation
@@ -54,9 +54,9 @@ struct ValidationError {
 
 #[derive(Debug, Clone, Copy)]
 enum ErrorType {
-    MandatorySegmentMissing,
+    // MandatorySegmentMissing,
     SegmentSequenceError,
-    MandatoryElementMissing,
+    // MandatoryElementMissing,
     InvalidElementValue,
     ControlNumberMismatch,
     CountMismatch,
@@ -150,11 +150,7 @@ impl ValidationHandler {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     if let Some(isa_ctrl) = self.isa_control_number {
                         if num != isa_ctrl {
-                            self.add_error(
-                                segment.id,
-                                ErrorType::ControlNumberMismatch,
-                                Some(2),
-                            );
+                            self.add_error(segment.id, ErrorType::ControlNumberMismatch, Some(2));
                         }
                     }
                 }
@@ -222,11 +218,7 @@ impl ValidationHandler {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     if let Some(gs_ctrl) = self.gs_control_number {
                         if num != gs_ctrl {
-                            self.add_error(
-                                segment.id,
-                                ErrorType::ControlNumberMismatch,
-                                Some(2),
-                            );
+                            self.add_error(segment.id, ErrorType::ControlNumberMismatch, Some(2));
                         }
                     }
                 }
@@ -287,11 +279,7 @@ impl ValidationHandler {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     if let Some(st_ctrl) = self.st_control_number {
                         if num != st_ctrl {
-                            self.add_error(
-                                segment.id,
-                                ErrorType::ControlNumberMismatch,
-                                Some(2),
-                            );
+                            self.add_error(segment.id, ErrorType::ControlNumberMismatch, Some(2));
                         }
                     }
                 }

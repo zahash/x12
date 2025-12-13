@@ -1,8 +1,9 @@
 [workspace]
-resolver = "3"
-members = ["segment"]
-
+resolver = "2"
+members = ["segment", "validation", "host"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["X12 Parser Contributors"]
+license = "MIT"

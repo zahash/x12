@@ -5,3 +5,18 @@ version = 4
 [[package]]
 name = "segment"
 version = "0.1.0"
+
+[[package]]
+name = "x12-host"
+version = "0.1.0"
+dependencies = [
+ "segment",
+ "x12-validation",
+]
+
+[[package]]
+name = "x12-validation"
+version = "0.1.0"
+dependencies = [
+ "segment",
+]

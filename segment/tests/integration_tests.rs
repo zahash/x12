@@ -1,4 +1,4 @@
-use segment::{ParserError, Parser, Segment, SegmentHandler};
+use segment::{Parser, ParserError, Segment, SegmentHandler};
 
 /// Minimal handler that just counts segments
 struct CountingHandler {
@@ -238,11 +238,12 @@ fn test_utf8_element_conversion() {
         type Error = ParserError;
 
         fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Self::Error> {
-            if let Some(elem) = segment.element(5)
-                && let Some(s) = elem.as_str()
-                && s.contains("SENDER")
-            {
-                self.sender_found = true;
+            if let Some(elem) = segment.element(5) {
+                if let Some(s) = elem.as_str() {
+                    if s.contains("SENDER") {
+                        self.sender_found = true;
+                    }
+                }
             }
             Ok(())
         }
