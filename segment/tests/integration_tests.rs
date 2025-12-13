@@ -1,4 +1,4 @@
-use segment::{Parser, Halt, Segment, SegmentHandler};
+use segment::{Halt, Parser, Segment, SegmentHandler};
 
 /// Minimal handler that just counts segments
 struct CountingHandler {
@@ -122,7 +122,8 @@ fn test_segment_element_access() {
 
     impl SegmentHandler for ElementCaptureHandler {
         fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
-            if let Some(elem) = segment.element(5) {
+            // ISA06 is the sender ID (element 6 in new numbering)
+            if let Some(elem) = segment.element(6) {
                 self.element_5 = Some(elem.as_bytes().to_vec());
                 self.captured = true;
             }
@@ -190,32 +191,6 @@ fn test_custom_delimiters() {
 }
 
 #[test]
-fn test_required_element_missing() {
-    let x12_data = b"ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *231213*1430*^*00501*000000001*0*P*:~";
-
-    struct RequiredElementHandler;
-
-    impl SegmentHandler for RequiredElementHandler {
-        fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
-            // Try to access element that doesn't exist
-            // Since required_element returns ParserError, not Halt, we can't use ?
-            // Instead, return Halt if element is missing
-            if segment.required_element(100).is_err() {
-                return Err(Halt);
-            }
-            Ok(())
-        }
-    }
-
-    let mut parser = Parser::new();
-    let mut handler = RequiredElementHandler;
-
-    let result = parser.parse_segment(x12_data, &mut handler);
-    // Handler will get ParserError but parser returns Halt
-    assert!(result.is_err());
-}
-
-#[test]
 fn test_parser_reset() {
     let isa = b"ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *231213*1430*^*00501*000000001*0*P*:~";
 
@@ -239,7 +214,8 @@ fn test_utf8_element_conversion() {
 
     impl SegmentHandler for Utf8Handler {
         fn handle(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
-            if let Some(elem) = segment.element(5) {
+            // ISA06 is the sender ID (element 6 in new numbering)
+            if let Some(elem) = segment.element(6) {
                 if let Some(s) = elem.as_str() {
                     if s.contains("SENDER") {
                         self.sender_found = true;
@@ -270,7 +246,7 @@ fn test_segment_id_validation() {
 
     // All segment IDs should parse successfully
     // Validation of ID format happens in validators, not parser
-    
+
     // One character
     let result = parser.parse_segment(b"A*element~", &mut handler);
     assert!(result.is_ok());
@@ -286,7 +262,7 @@ fn test_segment_id_validation() {
     // Three characters
     let result = parser.parse_segment(b"NM1*element~", &mut handler);
     assert!(result.is_ok());
-    
+
     assert_eq!(handler.count, 4);
 }
 
@@ -329,7 +305,8 @@ fn test_segment_with_empty_elements() {
     let mut handler = ElementCountHandler { count: 0 };
 
     // Segment with empty elements: NM1***VALUE3
+    // element_count includes: NM1-00 (segment ID), NM1-01 (empty), NM1-02 (empty), NM1-03 (VALUE3)
     let result = parser.parse_segment(b"NM1***VALUE3~", &mut handler);
     assert!(result.is_ok());
-    assert_eq!(handler.count, 3); // Three elements, first two empty
+    assert_eq!(handler.count, 4); // Four elements: segment ID + three data elements
 }

@@ -1,4 +1,4 @@
-use segment::{Parser, Halt, Segment, SegmentHandler};
+use segment::{Halt, Parser, Segment, SegmentHandler};
 
 /// Example segment handler that validates X12 837 structure
 struct X12Handler {
@@ -29,46 +29,55 @@ impl X12Handler {
         println!("ISA: Interchange Control Header");
         println!(
             "  Sender: {:?}",
-            segment.element(5).and_then(|e| e.as_str())
+            segment.element(6).and_then(|e| e.as_str())
         );
         println!(
             "  Receiver: {:?}",
-            segment.element(7).and_then(|e| e.as_str())
+            segment.element(8).and_then(|e| e.as_str())
         );
-        println!("  Date: {:?}", segment.element(8).and_then(|e| e.as_str()));
-        println!("  Time: {:?}", segment.element(9).and_then(|e| e.as_str()));
+        println!("  Date: {:?}", segment.element(9).and_then(|e| e.as_str()));
+        println!("  Time: {:?}", segment.element(10).and_then(|e| e.as_str()));
         println!(
             "  Control Number: {:?}",
-            segment.element(12).and_then(|e| e.as_str())
+            segment.element(13).and_then(|e| e.as_str())
         );
     }
 
     fn validate_gs(&self, segment: &Segment) {
-        let functional_id = segment.element(0);
+        let functional_id = segment.element(1);
         println!("GS: Functional Group Header");
-        println!("  Functional ID Code: {:?}", functional_id.and_then(|e| e.as_str()));
+        println!(
+            "  Functional ID Code: {:?}",
+            functional_id.and_then(|e| e.as_str())
+        );
         println!(
             "  Application Sender: {:?}",
-            segment.element(1).and_then(|e| e.as_str())
+            segment.element(2).and_then(|e| e.as_str())
         );
         println!(
             "  Application Receiver: {:?}",
-            segment.element(2).and_then(|e| e.as_str())
+            segment.element(3).and_then(|e| e.as_str())
         );
-        println!("  Date: {:?}", segment.element(3).and_then(|e| e.as_str()));
+        println!("  Date: {:?}", segment.element(4).and_then(|e| e.as_str()));
         println!(
             "  Control Number: {:?}",
-            segment.element(5).and_then(|e| e.as_str())
+            segment.element(6).and_then(|e| e.as_str())
         );
     }
 
     fn validate_st(&self, segment: &Segment) {
-        let transaction_set = segment.element(0);
-        let control_number = segment.element(1);
+        let transaction_set = segment.element(1);
+        let control_number = segment.element(2);
 
         println!("ST: Transaction Set Header");
-        println!("  Transaction Set ID: {:?}", transaction_set.and_then(|e| e.as_str()));
-        println!("  Control Number: {:?}", control_number.and_then(|e| e.as_str()));
+        println!(
+            "  Transaction Set ID: {:?}",
+            transaction_set.and_then(|e| e.as_str())
+        );
+        println!(
+            "  Control Number: {:?}",
+            control_number.and_then(|e| e.as_str())
+        );
 
         // For 837, transaction set should be "837"
         if let Some(ts) = transaction_set {
@@ -82,15 +91,15 @@ impl X12Handler {
         // NM1 - Entity Identifier
         println!("NM1: Entity Identifier");
 
-        if let Some(entity_id) = segment.element(0) {
+        if let Some(entity_id) = segment.element(1) {
             println!("  Entity ID Code: {:?}", entity_id.as_str());
         }
 
-        if let Some(entity_type) = segment.element(1) {
+        if let Some(entity_type) = segment.element(2) {
             println!("  Entity Type: {:?}", entity_type.as_str());
         }
 
-        if let Some(name) = segment.element(2) {
+        if let Some(name) = segment.element(3) {
             println!("  Name: {:?}", name.as_str());
         }
     }
@@ -99,11 +108,11 @@ impl X12Handler {
         // CLM - Claim Information
         println!("CLM: Claim Information");
 
-        if let Some(claim_id) = segment.element(0) {
+        if let Some(claim_id) = segment.element(1) {
             println!("  Claim ID: {:?}", claim_id.as_str());
         }
 
-        if let Some(amount) = segment.element(1) {
+        if let Some(amount) = segment.element(2) {
             println!("  Claim Amount: {:?}", amount.as_str());
         }
     }

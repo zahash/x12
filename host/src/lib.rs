@@ -3,10 +3,10 @@
 //! Provides utilities for parsing large X12 files with chunked reading.
 
 use std::fs::File;
-use std::io::{Read, BufReader};
+use std::io::{BufReader, Read};
 use std::path::Path;
 
-use segment::{Parser, Halt, SegmentHandler};
+use segment::{Halt, Parser, SegmentHandler};
 
 /// Configuration for chunked file parsing
 #[derive(Debug, Clone)]
@@ -22,8 +22,8 @@ pub struct ChunkedParseConfig {
 impl Default for ChunkedParseConfig {
     fn default() -> Self {
         Self {
-            initial_buffer_size: 8 * 1024,       // 8KB
-            max_buffer_size: 16 * 1024 * 1024,   // 16MB
+            initial_buffer_size: 8 * 1024,     // 8KB
+            max_buffer_size: 16 * 1024 * 1024, // 16MB
             resize_multiplier: 2,
         }
     }
@@ -58,7 +58,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
     pub fn new(handler: H, config: ChunkedParseConfig) -> Self {
         let buffer = vec![0u8; config.initial_buffer_size];
         let max_buffer_size = config.initial_buffer_size;
-        
+
         Self {
             parser: Parser::new(),
             handler,
@@ -90,15 +90,17 @@ impl<H: SegmentHandler> ChunkedParser<H> {
         loop {
             // Compact buffer if needed
             if self.buffer_start > self.buffer.len() / 2 && self.buffer_start > 0 {
-                self.buffer.copy_within(self.buffer_start..self.buffer_end, 0);
+                self.buffer
+                    .copy_within(self.buffer_start..self.buffer_end, 0);
                 self.buffer_end -= self.buffer_start;
                 self.buffer_start = 0;
             }
 
             // Read more data
-            let bytes_read = reader.read(&mut self.buffer[self.buffer_end..])
+            let bytes_read = reader
+                .read(&mut self.buffer[self.buffer_end..])
                 .map_err(|_| Halt)?;
-            
+
             self.stats.bytes_read += bytes_read as u64;
 
             if bytes_read == 0 && self.buffer_start == self.buffer_end {
@@ -118,7 +120,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
 
                 // Try to parse a segment
                 let result = self.parser.parse_segment(unparsed, &mut self.handler);
-                
+
                 match result {
                     Ok(consumed) => {
                         self.buffer_start += consumed;
@@ -127,7 +129,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
                     Err(Halt) => {
                         // Parser couldn't parse - either incomplete or catastrophic error
                         let remaining = self.buffer_end - self.buffer_start;
-                        
+
                         if bytes_read > 0 && remaining >= self.buffer.len() {
                             // Buffer is full and we read data, likely incomplete segment
                             // Try to resize buffer
@@ -150,8 +152,8 @@ impl<H: SegmentHandler> ChunkedParser<H> {
 
     /// Resize the buffer
     fn resize_buffer(&mut self) -> Result<(), Halt> {
-        let new_size = (self.buffer.len() * self.config.resize_multiplier)
-            .min(self.config.max_buffer_size);
+        let new_size =
+            (self.buffer.len() * self.config.resize_multiplier).min(self.config.max_buffer_size);
 
         if new_size == self.buffer.len() {
             // Can't resize further
@@ -161,7 +163,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
         let remaining = self.buffer_end - self.buffer_start;
         let mut new_buffer = vec![0u8; new_size];
         new_buffer[..remaining].copy_from_slice(&self.buffer[self.buffer_start..self.buffer_end]);
-        
+
         self.buffer = new_buffer;
         self.buffer_end = remaining;
         self.buffer_start = 0;
@@ -191,7 +193,7 @@ impl<H: SegmentHandler> ChunkedParser<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use segment::{Segment, ParserError};
+    use segment::Segment;
 
     struct TestHandler {
         count: usize,

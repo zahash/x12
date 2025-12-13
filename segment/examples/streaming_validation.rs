@@ -1,4 +1,4 @@
-use segment::{Parser, Halt, Segment, SegmentHandler};
+use segment::{Halt, Parser, Segment, SegmentHandler};
 
 /// A more sophisticated handler that maintains state for SNIP validation
 /// and hierarchical structure validation
@@ -103,12 +103,13 @@ impl ValidationHandler {
 
     fn validate_isa(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // SNIP Level 1: Syntax validation
-        if segment.element_count() != 16 {
+        // ISA has 17 elements total: ISA-00 (segment ID) through ISA-16
+        if segment.element_count() != 17 {
             self.add_error(segment.id, ErrorType::SegmentSequenceError, None);
         }
 
         // Extract and store control number (ISA13)
-        if let Some(control) = segment.element(12) {
+        if let Some(control) = segment.element(13) {
             if let Some(ctrl_str) = control.as_str() {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     self.isa_control_number = Some(num);
@@ -117,14 +118,14 @@ impl ValidationHandler {
         }
 
         // SNIP Level 2: Validate ISA01 and ISA03 qualifiers
-        if let Some(isa01) = segment.element(0) {
+        if let Some(isa01) = segment.element(1) {
             if !is_valid_qualifier(isa01.as_bytes(), &[b"00", b"03"]) {
                 self.add_error(segment.id, ErrorType::InvalidElementValue, Some(1));
             }
         }
 
         // SNIP Level 5: Validate ISA15 (Usage Indicator)
-        if let Some(isa15) = segment.element(14) {
+        if let Some(isa15) = segment.element(15) {
             if !is_valid_qualifier(isa15.as_bytes(), &[b"T", b"P", b"I"]) {
                 self.add_error(segment.id, ErrorType::InvalidElementValue, Some(15));
             }
@@ -137,7 +138,7 @@ impl ValidationHandler {
 
     fn validate_iea(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // IEA01 - Number of Included Functional Groups
-        if let Some(count_elem) = segment.element(0) {
+        if let Some(count_elem) = segment.element(1) {
             if let Some(count_str) = count_elem.as_str() {
                 if let Ok(count) = parse_u32(count_str.as_bytes()) {
                     self.expected_groups = Some(count);
@@ -146,7 +147,7 @@ impl ValidationHandler {
         }
 
         // IEA02 - Interchange Control Number (must match ISA13)
-        if let Some(control_elem) = segment.element(1) {
+        if let Some(control_elem) = segment.element(2) {
             if let Some(ctrl_str) = control_elem.as_str() {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     if let Some(isa_ctrl) = self.isa_control_number {
@@ -168,13 +169,13 @@ impl ValidationHandler {
             // Validation error recorded
         }
 
-        // SNIP Level 1: GS requires at least 8 elements
-        if segment.element_count() < 8 {
+        // SNIP Level 1: GS requires at least 9 elements (GS-00 through GS-08)
+        if segment.element_count() < 9 {
             // Validation error recorded
         }
 
         // Extract GS06 - Group Control Number
-        if let Some(control) = segment.element(5) {
+        if let Some(control) = segment.element(6) {
             if let Some(ctrl_str) = control.as_str() {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     self.gs_control_number = Some(num);
@@ -183,7 +184,7 @@ impl ValidationHandler {
         }
 
         // SNIP Level 2: Validate GS01 Functional Identifier Code
-        if let Some(gs01) = segment.element(0) {
+        if let Some(gs01) = segment.element(1) {
             // For 837, should be "HC" (Health Care Claim)
             if gs01.as_bytes() != b"HC" {
                 println!("Warning: GS01 is not 'HC' for healthcare claim");
@@ -191,7 +192,7 @@ impl ValidationHandler {
         }
 
         // SNIP Level 5: Validate GS08 Version
-        if let Some(version) = segment.element(7) {
+        if let Some(version) = segment.element(8) {
             if let Some(ver_str) = version.as_str() {
                 if !ver_str.starts_with("00501") {
                     println!("Warning: Non-standard version: {}", ver_str);
@@ -206,7 +207,7 @@ impl ValidationHandler {
 
     fn validate_ge(&mut self, segment: &Segment) -> core::result::Result<(), Halt> {
         // GE01 - Number of Transaction Sets
-        if let Some(count_elem) = segment.element(0) {
+        if let Some(count_elem) = segment.element(1) {
             if let Some(count_str) = count_elem.as_str() {
                 if let Ok(count) = parse_u32(count_str.as_bytes()) {
                     self.expected_transactions = Some(count);
@@ -215,7 +216,7 @@ impl ValidationHandler {
         }
 
         // GE02 - Group Control Number (must match GS06)
-        if let Some(control_elem) = segment.element(1) {
+        if let Some(control_elem) = segment.element(2) {
             if let Some(ctrl_str) = control_elem.as_str() {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     if let Some(gs_ctrl) = self.gs_control_number {
@@ -238,7 +239,7 @@ impl ValidationHandler {
         }
 
         // Extract ST02 - Transaction Set Control Number
-        if let Some(control) = segment.element(1) {
+        if let Some(control) = segment.element(2) {
             if let Some(ctrl_str) = control.as_str() {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     self.st_control_number = Some(num);
@@ -247,7 +248,7 @@ impl ValidationHandler {
         }
 
         // Validate ST01 - Transaction Set Identifier Code
-        if let Some(st01) = segment.element(0) {
+        if let Some(st01) = segment.element(1) {
             if st01.as_bytes() != b"837" {
                 println!("Warning: Not an 837 transaction set");
             }
@@ -262,7 +263,7 @@ impl ValidationHandler {
         self.st_segment_count += 1; // SE counts in the total
 
         // SE01 - Number of Included Segments
-        if let Some(count_elem) = segment.element(0) {
+        if let Some(count_elem) = segment.element(1) {
             if let Some(count_str) = count_elem.as_str() {
                 if let Ok(count) = parse_u32(count_str.as_bytes()) {
                     if count != self.st_segment_count {
@@ -277,7 +278,7 @@ impl ValidationHandler {
         }
 
         // SE02 - Transaction Set Control Number (must match ST02)
-        if let Some(control_elem) = segment.element(1) {
+        if let Some(control_elem) = segment.element(2) {
             if let Some(ctrl_str) = control_elem.as_str() {
                 if let Ok(num) = parse_u32(ctrl_str.as_bytes()) {
                     if let Some(st_ctrl) = self.st_control_number {
@@ -297,7 +298,7 @@ impl ValidationHandler {
         // SNIP Level 7: Inter-segment validation for hierarchical structure
 
         // HL01 - Hierarchical ID Number
-        if let Some(hl_id) = segment.element(0) {
+        if let Some(hl_id) = segment.element(1) {
             if let Some(id_str) = hl_id.as_str() {
                 if let Ok(id) = parse_u32(id_str.as_bytes()) {
                     self.current_hl_id = Some(id);
@@ -306,7 +307,7 @@ impl ValidationHandler {
         }
 
         // HL02 - Hierarchical Parent ID Number
-        if let Some(parent_elem) = segment.element(1) {
+        if let Some(parent_elem) = segment.element(2) {
             if !parent_elem.is_empty() {
                 if let Some(parent_str) = parent_elem.as_str() {
                     if let Ok(parent_id) = parse_u32(parent_str.as_bytes()) {

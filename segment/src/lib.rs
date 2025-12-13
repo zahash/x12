@@ -1,55 +1,14 @@
 #![no_std]
 
-//! X12 837 Stream Parser
-//!
-//! A no_std, zero-copy, streaming parser for X12 837 healthcare claims documents.
-//! Inspired by httparse, this parser processes segments incrementally from a buffer
-//! provided by the host application.
-//!
-//! # Design Philosophy
-//! - Zero-copy: All data references point to the original buffer
-//! - Streaming: Parse one segment at a time without buffering
-//! - Ephemeral: No long-term storage, all references are short-lived
-//! - Efficient: Minimal allocations, optimal for embedded systems
-//!
-//! # Usage
-//! ```ignore
-//! let mut parser = Parser::new();
-//! let mut handler = MyHandler::new();
-//!
-//! loop {
-//!     match parser.parse_segment(buffer, &mut handler) {
-//!         Ok(bytes_read) => {
-//!             // Consume bytes from buffer
-//!             buffer = &buffer[bytes_read..];
-//!         }
-//!         Err(ParserError::Incomplete) => {
-//!             // Load more data into buffer
-//!             break;
-//!         }
-//!         Err(e) => {
-//!             // Handle error
-//!             break;
-//!         }
-//!     }
-//! }
-//! ```
-
-/// Parser errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParserError {
-    /// Not enough data in buffer to parse a complete segment
-    Incomplete,
-    /// Invalid segment structure or format
-    InvalidSegment,
-    /// Invalid delimiter configuration in ISA segment
-    InvalidDelimiters,
-    /// Segment identifier is invalid or missing
-    InvalidSegmentId,
-    /// Element count doesn't match segment requirements
-    InvalidElementCount,
-    /// Required element is missing
-    MissingRequiredElement,
+/// Parsed X12 segment with zero-copy element references
+#[derive(Debug)]
+pub struct Segment<'a> {
+    /// Segment identifier (e.g., "ISA", "GS", "ST", "NM1")
+    pub id: &'a [u8],
+    /// Raw segment data containing elements
+    data: &'a [u8],
+    /// Delimiter configuration
+    pub delimiters: Delimiters,
 }
 
 /// X12 delimiters extracted from ISA segment
@@ -57,10 +16,13 @@ pub enum ParserError {
 pub struct Delimiters {
     /// Element separator (position 3 in ISA, typically '*')
     pub element: u8,
+
     /// Sub-element separator (position 104 in ISA, typically ':')
     pub subelement: u8,
+
     /// Segment terminator (position 105 in ISA, typically '~')
     pub segment: u8,
+
     /// Repetition separator (optional, typically '^')
     pub repetition: u8,
 }
@@ -76,6 +38,91 @@ impl Default for Delimiters {
     }
 }
 
+impl<'a> Segment<'a> {
+    /// Create a new segment
+    fn new(id: &'a [u8], data: &'a [u8], delimiters: Delimiters) -> Self {
+        Self {
+            id,
+            data,
+            delimiters,
+        }
+    }
+
+    /// Get segment ID as string (if valid UTF-8)
+    #[inline]
+    pub fn id_str(&self) -> Option<&'a str> {
+        core::str::from_utf8(self.id).ok()
+    }
+
+    /// Iterate over all elements
+    pub fn elements(&self) -> ElementIter<'a> {
+        ElementIter {
+            data: self.data,
+            separator: self.delimiters.element,
+            pos: 0,
+        }
+    }
+
+    /// Get element by X12 element number
+    ///
+    /// Uses domain-specific numbering:
+    /// - `element(0)` returns the segment ID (e.g., ISA-00)
+    /// - `element(1)` returns the first data element (e.g., ISA-01)
+    /// - `element(2)` returns the second data element (e.g., ISA-02)
+    ///
+    /// This matches X12 standard conventions and prevents off-by-one errors.
+    #[inline]
+    pub fn element(&self, element_number: usize) -> Option<Element<'a>> {
+        match element_number {
+            0 => Some(Element::new(self.id)), // Element 0 is the segment ID itself
+            _ => self.elements().nth(element_number - 1), // Elements 1+ are data elements (0-indexed internally)
+        }
+    }
+
+    /// Get total element count including segment ID
+    ///
+    /// Returns count where segment ID is element 0.
+    /// For example, ISA has 17 elements total (ISA-00 through ISA-16).
+    pub fn element_count(&self) -> usize {
+        // Add 1 to include the segment ID as element 0
+        self.elements().count() + 1
+    }
+}
+
+/// Iterator over segment elements
+pub struct ElementIter<'a> {
+    data: &'a [u8],
+    separator: u8,
+    pos: usize,
+}
+
+impl<'a> Iterator for ElementIter<'a> {
+    type Item = Element<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos > self.data.len() {
+            return None;
+        }
+
+        let start = self.pos;
+        let remaining = &self.data[start..];
+
+        if let Some(idx) = remaining.iter().position(|&b| b == self.separator) {
+            self.pos = start + idx + 1;
+            Some(Element::new(&remaining[..idx]))
+        } else if start < self.data.len() {
+            self.pos = self.data.len() + 1;
+            Some(Element::new(remaining))
+        } else if start == self.data.len() && start > 0 {
+            // Handle trailing separator
+            self.pos = self.data.len() + 1;
+            Some(Element::new(&[]))
+        } else {
+            None
+        }
+    }
+}
+
 /// Represents a parsed segment element
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Element<'a> {
@@ -84,19 +131,16 @@ pub struct Element<'a> {
 }
 
 impl<'a> Element<'a> {
-    /// Create a new element from a byte slice
     #[inline]
     pub fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
-    /// Get the raw bytes of this element
     #[inline]
     pub fn as_bytes(&self) -> &'a [u8] {
         self.data
     }
 
-    /// Check if element is empty
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
@@ -152,101 +196,6 @@ impl<'a> Iterator for ComponentIter<'a> {
     }
 }
 
-/// Parsed X12 segment with zero-copy element references
-#[derive(Debug)]
-pub struct Segment<'a> {
-    /// Segment identifier (e.g., "ISA", "GS", "ST", "NM1")
-    pub id: &'a [u8],
-    /// Raw segment data containing elements
-    data: &'a [u8],
-    /// Delimiter configuration
-    pub delimiters: Delimiters,
-}
-
-impl<'a> Segment<'a> {
-    /// Create a new segment
-    fn new(id: &'a [u8], data: &'a [u8], delimiters: Delimiters) -> Self {
-        Self {
-            id,
-            data,
-            delimiters,
-        }
-    }
-
-    /// Get segment ID as string (if valid UTF-8)
-    #[inline]
-    pub fn id_str(&self) -> Option<&'a str> {
-        core::str::from_utf8(self.id).ok()
-    }
-
-    /// Get element at index (0-based, not including segment ID)
-    #[inline]
-    pub fn element(&self, index: usize) -> Option<Element<'a>> {
-        self.elements().nth(index)
-    }
-
-    /// Get required element at index, returns error if missing or empty
-    #[inline]
-    pub fn required_element(&self, index: usize) -> Result<Element<'a>, ParserError> {
-        match self.element(index) {
-            Some(elem) if !elem.is_empty() => Ok(elem),
-            _ => Err(ParserError::MissingRequiredElement),
-        }
-    }
-
-    /// Get element count
-    pub fn element_count(&self) -> usize {
-        self.elements().count()
-    }
-
-    /// Iterate over all elements
-    pub fn elements(&self) -> ElementIter<'a> {
-        ElementIter {
-            data: self.data,
-            separator: self.delimiters.element,
-            pos: 0,
-        }
-    }
-}
-
-/// Iterator over segment elements
-pub struct ElementIter<'a> {
-    data: &'a [u8],
-    separator: u8,
-    pos: usize,
-}
-
-impl<'a> Iterator for ElementIter<'a> {
-    type Item = Element<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pos > self.data.len() {
-            return None;
-        }
-
-        let start = self.pos;
-        let remaining = &self.data[start..];
-
-        if let Some(idx) = remaining.iter().position(|&b| b == self.separator) {
-            self.pos = start + idx + 1;
-            Some(Element::new(&remaining[..idx]))
-        } else if start < self.data.len() {
-            self.pos = self.data.len() + 1;
-            Some(Element::new(remaining))
-        } else if start == self.data.len() && start > 0 {
-            // Handle trailing separator
-            self.pos = self.data.len() + 1;
-            Some(Element::new(&[]))
-        } else {
-            None
-        }
-    }
-}
-
-/// Catastrophic error indicating parsing must halt immediately
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Halt;
-
 /// Trait for handling parsed segments
 ///
 /// Implement this trait to process segments as they are parsed.
@@ -277,6 +226,10 @@ pub trait SegmentHandler {
     /// a separate method (e.g., `errors()` or `report()`).
     fn handle(&mut self, segment: &Segment) -> Result<(), Halt>;
 }
+
+/// Catastrophic error indicating parsing must halt immediately
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Halt;
 
 /// Parser state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,8 +327,8 @@ impl Parser {
         let data = &buffer[4..105];
         let segment = Segment::new(b"ISA", data, self.delimiters);
 
-        // Extract repetition separator from ISA11 (element at index 10)
-        if let Some(elem) = segment.element(10) {
+        // Extract repetition separator from ISA11
+        if let Some(elem) = segment.element(11) {
             if let Some(&rep) = elem.as_bytes().first() {
                 self.delimiters.repetition = rep;
             }

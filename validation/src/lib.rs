@@ -233,13 +233,17 @@ impl Snip1Validator {
 
     fn validate_isa(&mut self, segment: &Segment) {
         let count = segment.element_count();
-        if count != 16 {
+        // ISA has 17 elements: ISA-00 (segment ID) through ISA-16
+        if count != 17 {
             self.add_error(
                 Severity::Error,
                 ErrorKind::InvalidSyntax,
                 segment,
                 None,
-                alloc::format!("ISA must have exactly 16 elements, found {}", count),
+                alloc::format!(
+                    "ISA must have exactly 17 elements (ISA-00 through ISA-16), found {}",
+                    count
+                ),
             );
         }
         self.state = ValidationState::InInterchange;
@@ -256,13 +260,17 @@ impl Snip1Validator {
             );
         }
         let count = segment.element_count();
-        if count < 8 {
+        // GS has at least 9 elements: GS-00 (segment ID) through GS-08
+        if count < 9 {
             self.add_error(
                 Severity::Error,
                 ErrorKind::InvalidSyntax,
                 segment,
                 None,
-                alloc::format!("GS must have at least 8 elements, found {}", count),
+                alloc::format!(
+                    "GS must have at least 9 elements (GS-00 through GS-08), found {}",
+                    count
+                ),
             );
         }
         self.state = ValidationState::InGroup;
@@ -279,13 +287,17 @@ impl Snip1Validator {
             );
         }
         let count = segment.element_count();
-        if count < 2 {
+        // ST has at least 3 elements: ST-00 (segment ID), ST-01, ST-02
+        if count < 3 {
             self.add_error(
                 Severity::Error,
                 ErrorKind::InvalidSyntax,
                 segment,
                 None,
-                alloc::format!("ST must have at least 2 elements"),
+                alloc::format!(
+                    "ST must have at least 3 elements (ST-00 through ST-02), found {}",
+                    count
+                ),
             );
         }
         self.state = ValidationState::InTransaction;
@@ -435,19 +447,19 @@ impl Validator for Snip7Validator {
 
         match id {
             "ISA" => {
-                if let Some(elem) = segment.element(12) {
+                if let Some(elem) = segment.element(13) {
                     self.isa_control = self.parse_u32(elem.as_bytes());
                 }
             }
             "IEA" => {
-                if let Some(elem) = segment.element(1) {
+                if let Some(elem) = segment.element(2) {
                     if let Some(control) = self.parse_u32(elem.as_bytes()) {
                         if Some(control) != self.isa_control {
                             self.add_error(
                                 Severity::Error,
                                 ErrorKind::ControlNumberMismatch,
                                 segment,
-                                Some(1),
+                                Some(2),
                                 alloc::format!(
                                     "IEA02 ({}) does not match ISA13 ({:?})",
                                     control,
@@ -459,19 +471,19 @@ impl Validator for Snip7Validator {
                 }
             }
             "GS" => {
-                if let Some(elem) = segment.element(5) {
+                if let Some(elem) = segment.element(6) {
                     self.gs_control = self.parse_u32(elem.as_bytes());
                 }
             }
             "GE" => {
-                if let Some(elem) = segment.element(1) {
+                if let Some(elem) = segment.element(2) {
                     if let Some(control) = self.parse_u32(elem.as_bytes()) {
                         if Some(control) != self.gs_control {
                             self.add_error(
                                 Severity::Error,
                                 ErrorKind::ControlNumberMismatch,
                                 segment,
-                                Some(1),
+                                Some(2),
                                 alloc::format!(
                                     "GE02 ({}) does not match GS06 ({:?})",
                                     control,
@@ -483,7 +495,7 @@ impl Validator for Snip7Validator {
                 }
             }
             "ST" => {
-                if let Some(elem) = segment.element(1) {
+                if let Some(elem) = segment.element(2) {
                     self.st_control = self.parse_u32(elem.as_bytes());
                 }
                 self.st_segment_count = 1; // ST counts as first segment
@@ -492,14 +504,14 @@ impl Validator for Snip7Validator {
                 self.st_segment_count += 1; // SE counts in total
 
                 // Check segment count
-                if let Some(elem) = segment.element(0) {
+                if let Some(elem) = segment.element(1) {
                     if let Some(count) = self.parse_u32(elem.as_bytes()) {
                         if count != self.st_segment_count {
                             self.add_error(
                                 Severity::Error,
                                 ErrorKind::CountMismatch,
                                 segment,
-                                Some(0),
+                                Some(1),
                                 alloc::format!(
                                     "SE01 count ({}) does not match actual ({}) ",
                                     count,
@@ -511,14 +523,14 @@ impl Validator for Snip7Validator {
                 }
 
                 // Check control number
-                if let Some(elem) = segment.element(1) {
+                if let Some(elem) = segment.element(2) {
                     if let Some(control) = self.parse_u32(elem.as_bytes()) {
                         if Some(control) != self.st_control {
                             self.add_error(
                                 Severity::Error,
                                 ErrorKind::ControlNumberMismatch,
                                 segment,
-                                Some(1),
+                                Some(2),
                                 alloc::format!(
                                     "SE02 ({}) does not match ST02 ({:?})",
                                     control,
