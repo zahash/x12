@@ -289,6 +289,21 @@ impl SegmentParser {
         Self::Initial
     }
 
+    /// Skip leading newlines (\\r and \\n) at the start of buffer
+    ///
+    /// This handles the case where segment terminators are followed by newlines for readability,
+    /// and the buffer boundary falls in the middle of those newlines.
+    /// Advances the buffer and returns the number of bytes skipped.
+    #[inline]
+    fn skip_lf_crlf(buffer: &mut &[u8]) -> usize {
+        let skipped = buffer
+            .iter()
+            .take_while(|&&b| b == b'\r' || b == b'\n')
+            .count();
+        *buffer = &buffer[skipped..];
+        skipped
+    }
+
     /// Parse multiple segments from the buffer and invoke handler for each.
     ///
     /// Returns the number of bytes consumed on success.
@@ -305,21 +320,25 @@ impl SegmentParser {
     /// * `handler` - Segment handler to process parsed segment
     pub fn parse_segments<H: SegmentHandler>(
         &mut self,
-        buffer: &[u8],
+        mut buffer: &[u8],
         handler: &mut H,
     ) -> Result<usize, SegmentParserError> {
         let mut total_bytes_parsed = 0;
-        let mut remaining = buffer;
 
-        while !remaining.is_empty() {
-            let bytes_parsed = match self {
+        // Skip any leading newlines at the start of this buffer chunk.
+        // This handles the case where newlines after a segment terminator
+        // were split across buffer boundaries.
+        total_bytes_parsed += Self::skip_lf_crlf(&mut buffer);
+
+        while !buffer.is_empty() {
+            total_bytes_parsed += match self {
                 SegmentParser::Initial => {
-                    let (bytes_parsed, delimiters) = Self::parse_isa_segment(remaining, handler)?;
+                    let (bytes_parsed, delimiters) = Self::parse_isa_segment(&mut buffer, handler)?;
                     *self = SegmentParser::Processing(delimiters);
                     bytes_parsed
                 }
                 SegmentParser::Processing(delimiters) => {
-                    match Self::parse_regular_segment(remaining, handler, *delimiters) {
+                    match Self::parse_regular_segment(&mut buffer, handler, *delimiters) {
                         Ok(consumed) => consumed,
                         Err(e) => match e {
                             SegmentParserError::Incomplete if total_bytes_parsed > 0 => {
@@ -332,8 +351,9 @@ impl SegmentParser {
                 }
             };
 
-            total_bytes_parsed += bytes_parsed;
-            remaining = &remaining[bytes_parsed..];
+            // Skip any trailing newlines after the segment we just parsed.
+            // This ensures we don't include them in the next segment.
+            total_bytes_parsed += Self::skip_lf_crlf(&mut buffer);
         }
 
         Ok(total_bytes_parsed)
@@ -343,8 +363,9 @@ impl SegmentParser {
     ///
     /// The ISA segment is special because it has fixed-width fields and
     /// defines the delimiters used for the rest of the document.
+    /// Advances the buffer and returns delimiters and bytes consumed.
     fn parse_isa_segment<H: SegmentHandler>(
-        buffer: &[u8],
+        buffer: &mut &[u8],
         handler: &mut H,
     ) -> Result<(usize, Delimiters), SegmentParserError> {
         // including segment terminator
@@ -384,12 +405,14 @@ impl SegmentParser {
             )))?;
 
         handler.handle(&segment)?;
+        *buffer = &buffer[ISA_SIZE_BYTES..];
         Ok((ISA_SIZE_BYTES, segment.delimiters))
     }
 
     /// Parse a regular segment (non-ISA)
+    /// Advances the buffer and returns the number of bytes consumed.
     fn parse_regular_segment<H: SegmentHandler>(
-        buffer: &[u8],
+        buffer: &mut &[u8],
         handler: &mut H,
         delimiters: Delimiters,
     ) -> Result<usize, SegmentParserError> {
@@ -424,6 +447,9 @@ impl SegmentParser {
 
         let segment = Segment::new(segment_id, elements_data, delimiters);
         handler.handle(&segment)?;
-        Ok(segment_end + 1) // +1 for segment terminator
+
+        let consumed = segment_end + 1; // +1 for segment terminator
+        *buffer = &buffer[consumed..];
+        Ok(consumed)
     }
 }
