@@ -1,4 +1,4 @@
-use segment::{Halt, Parser, ParserError, Segment, SegmentHandler};
+use segment::{Halt, Segment, SegmentHandler, SegmentParser, SegmentParserError};
 
 /// Minimal handler that just counts segments
 struct CountingHandler {
@@ -27,12 +27,12 @@ fn test_complete_837_document() {
                      GE*1*1~\
                      IEA*1*000000001~";
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = CountingHandler::new();
     let mut buffer = x12_data.as_slice();
 
     while !buffer.is_empty() {
-        match parser.parse_segment(buffer, &mut handler) {
+        match parser.parse_segments(buffer, &mut handler) {
             Ok(consumed) => {
                 buffer = &buffer[consumed..];
             }
@@ -49,37 +49,41 @@ fn test_complete_837_document() {
 fn test_incomplete_isa() {
     let partial_isa = b"ISA*00*          *00*";
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = CountingHandler::new();
 
-    let result = parser.parse_segment(partial_isa, &mut handler);
-    assert_eq!(result, Err(ParserError::Incomplete));
+    let Err(SegmentParserError::Incomplete) = parser.parse_segments(partial_isa, &mut handler)
+    else {
+        panic!("Expected Incomplete error");
+    };
 }
 
 #[test]
 fn test_incomplete_regular_segment() {
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     parser.set_delimiters(segment::Delimiters::default());
 
     let mut handler = CountingHandler::new();
     let partial_st = b"ST*837*0001";
 
-    let result = parser.parse_segment(partial_st, &mut handler);
-    assert_eq!(result, Err(ParserError::Incomplete));
+    let Err(SegmentParserError::Incomplete) = parser.parse_segments(partial_st, &mut handler)
+    else {
+        panic!("Expected Incomplete error");
+    };
 }
 
 #[test]
 fn test_invalid_segment_id() {
     // Parser no longer validates segment IDs - that's the validator's job
     // Parser just parses the structure
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     parser.set_delimiters(segment::Delimiters::default());
 
     let mut handler = CountingHandler::new();
     let bad_segment = b"1*element~";
 
     // Parser should successfully parse the structure
-    let result = parser.parse_segment(bad_segment, &mut handler);
+    let result = parser.parse_segments(bad_segment, &mut handler);
     assert!(result.is_ok());
     assert_eq!(handler.count, 1);
 }
@@ -131,43 +135,16 @@ fn test_segment_element_access() {
         }
     }
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = ElementCaptureHandler {
         captured: false,
         element_5: None,
     };
 
-    parser.parse_segment(x12_data, &mut handler).unwrap();
+    parser.parse_segments(x12_data, &mut handler).unwrap();
 
     assert!(handler.captured);
     assert!(handler.element_5.is_some());
-}
-
-#[test]
-fn test_multiple_segments_in_sequence() {
-    let x12_data = b"ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *231213*1430*^*00501*000000001*0*P*:~\
-                     GS*HC*SENDER*RECEIVER*20231213*1430*1*X*005010X222A1~\
-                     ST*837*0001~";
-
-    let mut parser = Parser::new();
-    let mut handler = CountingHandler::new();
-    let mut buffer = x12_data.as_slice();
-
-    // Parse ISA
-    let consumed = parser.parse_segment(buffer, &mut handler).unwrap();
-    assert_eq!(consumed, 106);
-    buffer = &buffer[consumed..];
-
-    // Parse GS
-    let consumed = parser.parse_segment(buffer, &mut handler).unwrap();
-    assert!(consumed > 0);
-    buffer = &buffer[consumed..];
-
-    // Parse ST
-    let consumed = parser.parse_segment(buffer, &mut handler).unwrap();
-    assert!(consumed > 0);
-
-    assert_eq!(handler.count, 3);
 }
 
 #[test]
@@ -175,29 +152,31 @@ fn test_custom_delimiters() {
     // Use | as element separator and # as segment terminator
     let x12_data = b"ISA|00|          |00|          |ZZ|SENDER         |ZZ|RECEIVER       |231213|1430|^|00501|000000001|0|P|:#";
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = CountingHandler::new();
 
-    let result = parser.parse_segment(x12_data, &mut handler);
+    let result = parser.parse_segments(x12_data, &mut handler);
 
     // Should successfully parse with custom delimiters
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 106);
 
     // Verify delimiters were extracted
-    let delims = parser.delimiters();
-    assert_eq!(delims.element, b'|');
-    assert_eq!(delims.segment, b'#');
+    let SegmentParser::Processing(delimiters) = parser else {
+        panic!("Parser not in Processing state");
+    };
+    assert_eq!(delimiters.element, b'|');
+    assert_eq!(delimiters.segment, b'#');
 }
 
 #[test]
 fn test_parser_reset() {
     let isa = b"ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *231213*1430*^*00501*000000001*0*P*:~";
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = CountingHandler::new();
 
-    parser.parse_segment(isa, &mut handler).unwrap();
+    parser.parse_segments(isa, &mut handler).unwrap();
     assert!(parser.is_initialized());
 
     parser.reset();
@@ -226,12 +205,12 @@ fn test_utf8_element_conversion() {
         }
     }
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = Utf8Handler {
         sender_found: false,
     };
 
-    parser.parse_segment(isa, &mut handler).unwrap();
+    parser.parse_segments(isa, &mut handler).unwrap();
     assert!(handler.sender_found);
 }
 
@@ -239,7 +218,7 @@ fn test_utf8_element_conversion() {
 fn test_segment_id_validation() {
     // Parser no longer validates segment ID format - that's the validator's job
     // Parser just parses structure regardless of segment ID validity
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     parser.set_delimiters(segment::Delimiters::default());
 
     let mut handler = CountingHandler::new();
@@ -248,19 +227,19 @@ fn test_segment_id_validation() {
     // Validation of ID format happens in validators, not parser
 
     // One character
-    let result = parser.parse_segment(b"A*element~", &mut handler);
+    let result = parser.parse_segments(b"A*element~", &mut handler);
     assert!(result.is_ok());
 
     // Four characters
-    let result = parser.parse_segment(b"ABCD*element~", &mut handler);
+    let result = parser.parse_segments(b"ABCD*element~", &mut handler);
     assert!(result.is_ok());
 
     // Two characters
-    let result = parser.parse_segment(b"ST*element~", &mut handler);
+    let result = parser.parse_segments(b"ST*element~", &mut handler);
     assert!(result.is_ok());
 
     // Three characters
-    let result = parser.parse_segment(b"NM1*element~", &mut handler);
+    let result = parser.parse_segments(b"NM1*element~", &mut handler);
     assert!(result.is_ok());
 
     assert_eq!(handler.count, 4);
@@ -268,27 +247,28 @@ fn test_segment_id_validation() {
 
 #[test]
 fn test_empty_buffer() {
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = CountingHandler::new();
 
-    let result = parser.parse_segment(b"", &mut handler);
-    assert_eq!(result, Err(ParserError::Incomplete));
+    let Ok(0) = parser.parse_segments(b"", &mut handler) else {
+        panic!("Expected Incomplete error");
+    };
 }
 
 #[test]
 fn test_segment_with_no_elements() {
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     parser.set_delimiters(segment::Delimiters::default());
 
     let mut handler = CountingHandler::new();
 
-    let result = parser.parse_segment(b"SE~", &mut handler);
+    let result = parser.parse_segments(b"SE~", &mut handler);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_segment_with_empty_elements() {
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     parser.set_delimiters(segment::Delimiters::default());
 
     struct ElementCountHandler {
@@ -306,7 +286,7 @@ fn test_segment_with_empty_elements() {
 
     // Segment with empty elements: NM1***VALUE3
     // element_count includes: NM1-00 (segment ID), NM1-01 (empty), NM1-02 (empty), NM1-03 (VALUE3)
-    let result = parser.parse_segment(b"NM1***VALUE3~", &mut handler);
+    let result = parser.parse_segments(b"NM1***VALUE3~", &mut handler);
     assert!(result.is_ok());
     assert_eq!(handler.count, 4); // Four elements: segment ID + three data elements
 }

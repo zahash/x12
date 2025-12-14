@@ -2,14 +2,14 @@
 name = "x12-host"
 version.workspace = true
 edition.workspace = true
-authors.workspace = true
-license.workspace = true
 description = "Host application for parsing large X12 files"
 
 [dependencies]
+thiserror = "2"
+
 segment = { path = "../segment", features = ["std"] }
 x12-validation = { path = "../validation", features = ["std"] }
 
 [[bin]]
-name = "x12-parse"
+name = "x12"
 path = "src/main.rs"

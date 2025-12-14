@@ -1,4 +1,4 @@
-use segment::{Halt, Parser, ParserError, Segment, SegmentHandler};
+use segment::{Halt, Segment, SegmentHandler, SegmentParser, SegmentParserError};
 
 /// A more sophisticated handler that maintains state for SNIP validation
 /// and hierarchical structure validation
@@ -426,7 +426,7 @@ fn main() {
                      GE*1*1~\
                      IEA*1*000000001~";
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = ValidationHandler::new(SnipLevel::Level7);
     let mut buffer = x12_data.as_slice();
     let mut segment_count = 0;
@@ -434,7 +434,7 @@ fn main() {
     println!("Starting validation...\n");
 
     loop {
-        match parser.parse_segment(buffer, &mut handler) {
+        match parser.parse_segments(buffer, &mut handler) {
             Ok(bytes_read) => {
                 segment_count += 1;
                 buffer = &buffer[bytes_read..];
@@ -443,11 +443,11 @@ fn main() {
                     break;
                 }
             }
-            Err(ParserError::Incomplete) => {
+            Err(SegmentParserError::Incomplete) => {
                 println!("Incomplete segment - need more data");
                 break;
             }
-            Err(ParserError::Halt(halt)) => {
+            Err(SegmentParserError::Halt(halt)) => {
                 println!("Parsing halted: {}", halt.message);
                 break;
             }

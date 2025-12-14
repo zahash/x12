@@ -1,4 +1,4 @@
-use segment::{Parser, ParserError, Segment, SegmentHandler};
+use segment::{Segment, SegmentHandler, SegmentParser, SegmentParserError};
 
 /// Example segment handler that validates X12 837 structure
 struct X12Handler {
@@ -225,13 +225,13 @@ fn main() {
                      GE*1*1~\
                      IEA*1*000000001~";
 
-    let mut parser = Parser::new();
+    let mut parser = SegmentParser::init();
     let mut handler = X12Handler::new();
     let mut buffer = x12_data.as_slice();
     let mut total_bytes = 0;
 
     loop {
-        match parser.parse_segment(buffer, &mut handler) {
+        match parser.parse_segments(buffer, &mut handler) {
             Ok(bytes_read) => {
                 total_bytes += bytes_read;
                 buffer = &buffer[bytes_read..];
@@ -241,11 +241,11 @@ fn main() {
                     break;
                 }
             }
-            Err(ParserError::Incomplete) => {
+            Err(SegmentParserError::Incomplete) => {
                 println!("\nIncomplete segment - need more data");
                 break;
             }
-            Err(ParserError::Halt(halt)) => {
+            Err(SegmentParserError::Halt(halt)) => {
                 println!("\nParsing halted: {}", halt.message);
                 break;
             }

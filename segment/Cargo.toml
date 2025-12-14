@@ -2,14 +2,9 @@
 name = "segment"
 version.workspace = true
 edition.workspace = true
-authors = ["X12 Parser Contributors"]
-description = "A no_std, zero-copy, streaming parser for X12 837 healthcare claims"
-keywords = ["x12", "edi", "837", "healthcare", "parser"]
-categories = ["parsing", "no-std"]
-readme = "../README.md"
-license = "MIT"
 
 [dependencies]
+thiserror = "2"
 
 [dev-dependencies]
 

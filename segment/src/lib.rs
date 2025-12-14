@@ -124,7 +124,7 @@ impl<'a> Iterator for ElementIter<'a> {
 }
 
 /// Represents a parsed segment element
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Element<'a> {
     /// Raw element data
     data: &'a [u8],
@@ -230,7 +230,8 @@ pub trait SegmentHandler {
 /// Catastrophic error indicating parsing must halt immediately
 ///
 /// Contains context about what caused the unrecoverable error.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug)]
+#[error("{message}")]
 pub struct Halt {
     /// Human-readable error message
     pub message: &'static str,
@@ -245,14 +246,15 @@ impl Halt {
 }
 
 /// Parser error type distinguishing recoverable from catastrophic errors
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParserError {
+#[derive(thiserror::Error, Debug)]
+pub enum SegmentParserError {
     /// Need more data in buffer to complete parsing
     ///
     /// This is a recoverable error - the caller should:
     /// 1. Grow the buffer (if possible)
     /// 2. Read more data from the source
     /// 3. Retry parsing
+    #[error("Incomplete segment - need more data")]
     Incomplete,
 
     /// Catastrophic error - parsing cannot continue
@@ -260,55 +262,45 @@ pub enum ParserError {
     /// This indicates a structural problem that makes it
     /// impossible to continue parsing (e.g., invalid ISA header,
     /// empty segment ID, handler returned error).
+    #[error("{0}")]
     Halt(Halt),
 }
 
-impl From<Halt> for ParserError {
+impl From<Halt> for SegmentParserError {
     fn from(halt: Halt) -> Self {
-        ParserError::Halt(halt)
+        SegmentParserError::Halt(halt)
     }
-}
-
-/// Parser state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum State {
-    /// Waiting for ISA segment to extract delimiters
-    Initial,
-    /// Processing segments with known delimiters
-    Processing,
 }
 
 /// X12 837 stream parser
 ///
 /// Parses X12 837 documents one segment at a time from a byte buffer.
 /// The parser maintains minimal state and performs zero-copy parsing.
-pub struct Parser {
-    state: State,
-    delimiters: Delimiters,
+pub enum SegmentParser {
+    /// Waiting for ISA segment to extract delimiters
+    Initial,
+
+    /// Processing segments with known delimiters
+    Processing(Delimiters),
 }
 
-impl Parser {
-    /// Create a new parser instance
-    pub fn new() -> Self {
-        Self {
-            state: State::Initial,
-            delimiters: Delimiters::default(),
-        }
+impl SegmentParser {
+    pub fn init() -> Self {
+        Self::Initial
     }
 
     /// Reset parser to initial state
     pub fn reset(&mut self) {
-        self.state = State::Initial;
-        self.delimiters = Delimiters::default();
+        *self = Self::Initial;
     }
 
-    /// Parse one segment from the buffer and invoke handler
+    /// Parse multiple segments from the buffer and invoke handler for each.
     ///
     /// Returns the number of bytes consumed on success.
     ///
     /// # Errors
     ///
-    /// - `ParserError::Incomplete` - Buffer doesn't contain a complete segment.
+    /// - `ParserError::Incomplete` - Buffer doesn't contain even a single complete segment.
     ///   Caller should grow buffer and read more data.
     /// - `ParserError::Halt` - Catastrophic error (invalid structure, handler error).
     ///   Parsing cannot continue.
@@ -316,19 +308,40 @@ impl Parser {
     /// # Arguments
     /// * `buffer` - Byte slice containing X12 data
     /// * `handler` - Segment handler to process parsed segment
-    pub fn parse_segment<H: SegmentHandler>(
+    pub fn parse_segments<H: SegmentHandler>(
         &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, ParserError> {
-        if buffer.is_empty() {
-            return Err(ParserError::Incomplete);
+    ) -> Result<usize, SegmentParserError> {
+        let mut total_bytes_parsed = 0;
+        let mut remaining = buffer;
+
+        while !remaining.is_empty() {
+            let bytes_parsed = match self {
+                SegmentParser::Initial => {
+                    let (bytes_parsed, delimiters) = Self::parse_isa_segment(remaining, handler)?;
+                    *self = SegmentParser::Processing(delimiters);
+                    bytes_parsed
+                }
+                SegmentParser::Processing(delimiters) => {
+                    match Self::parse_regular_segment(remaining, handler, *delimiters) {
+                        Ok(consumed) => consumed,
+                        Err(e) => match e {
+                            SegmentParserError::Incomplete if total_bytes_parsed > 0 => {
+                                /* some segments were parsed but need more data for next */
+                                break;
+                            }
+                            _ => return Err(e),
+                        },
+                    }
+                }
+            };
+
+            total_bytes_parsed += bytes_parsed;
+            remaining = &remaining[bytes_parsed..];
         }
 
-        match self.state {
-            State::Initial => self.parse_isa_segment(buffer, handler),
-            State::Processing => self.parse_regular_segment(buffer, handler),
-        }
+        Ok(total_bytes_parsed)
     }
 
     /// Parse the ISA (Interchange Control Header) segment
@@ -336,76 +349,72 @@ impl Parser {
     /// The ISA segment is special because it has fixed-width fields and
     /// defines the delimiters used for the rest of the document.
     fn parse_isa_segment<H: SegmentHandler>(
-        &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, ParserError> {
-        // ISA has a standard structure - search for segment terminator
-        // which should be around position 105-106
-        if buffer.len() < 106 {
-            return Err(ParserError::Incomplete);
+    ) -> Result<(usize, Delimiters), SegmentParserError> {
+        // including segment terminator
+        const ISA_SIZE_BYTES: usize = 106;
+
+        if buffer.len() < ISA_SIZE_BYTES {
+            return Err(SegmentParserError::Incomplete);
         }
 
         // Verify ISA identifier
         if &buffer[0..3] != b"ISA" {
-            return Err(ParserError::Halt(Halt::new(
+            return Err(SegmentParserError::Halt(Halt::new(
                 "Invalid ISA header: first three bytes must be 'ISA'",
             )));
         }
 
         // Extract delimiters from standard positions
-        // Position 3: element separator
-        // Position 104: sub-element separator
-        // Position 105: segment terminator
         let element_sep = buffer[3];
         let subelement_sep = buffer[104];
         let segment_term = buffer[105];
 
-        self.delimiters = Delimiters {
+        let mut delimiters = Delimiters {
             element: element_sep,
             subelement: subelement_sep,
             segment: segment_term,
-            repetition: b'^', // Default
+            ..Default::default() // repetetion default for now. will be extracted from ISA-11 below
         };
 
-        // Get the data between ISA and segment terminator
+        // Get the data between ISA* and segment terminator
         let data = &buffer[4..105];
-        let segment = Segment::new(b"ISA", data, self.delimiters);
+        let segment = Segment::new(b"ISA", data, delimiters);
 
         // Extract repetition separator from ISA11
         if let Some(elem) = segment.element(11) {
             if let Some(&rep) = elem.as_bytes().first() {
-                self.delimiters.repetition = rep;
+                delimiters.repetition = rep;
             }
         }
 
-        self.state = State::Processing;
-        handler.handle(&segment).map_err(ParserError::Halt)?;
-        Ok(106)
+        handler.handle(&segment)?;
+        Ok((ISA_SIZE_BYTES, delimiters))
     }
 
     /// Parse a regular segment (non-ISA)
     fn parse_regular_segment<H: SegmentHandler>(
-        &mut self,
         buffer: &[u8],
         handler: &mut H,
-    ) -> Result<usize, ParserError> {
+        delimiters: Delimiters,
+    ) -> Result<usize, SegmentParserError> {
         // Find segment terminator
         let segment_end = buffer
             .iter()
-            .position(|&b| b == self.delimiters.segment)
-            .ok_or(ParserError::Incomplete)?;
+            .position(|&b| b == delimiters.segment)
+            .ok_or(SegmentParserError::Incomplete)?;
 
         let segment_data = &buffer[..segment_end];
 
         // Find first element separator to extract segment ID
         let id_end = segment_data
             .iter()
-            .position(|&b| b == self.delimiters.element)
+            .position(|&b| b == delimiters.element)
             .unwrap_or(segment_data.len());
 
         if id_end == 0 {
-            return Err(ParserError::Halt(Halt::new(
+            return Err(SegmentParserError::Halt(Halt::new(
                 "Invalid segment: segment ID cannot be empty",
             )));
         }
@@ -419,21 +428,15 @@ impl Parser {
             &[]
         };
 
-        let segment = Segment::new(segment_id, elements_data, self.delimiters);
-        handler.handle(&segment).map_err(ParserError::Halt)?;
+        let segment = Segment::new(segment_id, elements_data, delimiters);
+        handler.handle(&segment)?;
         Ok(segment_end + 1) // +1 for segment terminator
-    }
-
-    /// Get current delimiter configuration
-    #[inline]
-    pub fn delimiters(&self) -> Delimiters {
-        self.delimiters
     }
 
     /// Check if parser has been initialized with ISA segment
     #[inline]
     pub fn is_initialized(&self) -> bool {
-        self.state == State::Processing
+        matches!(self, SegmentParser::Processing(_))
     }
 
     /// Set custom delimiters and force parser into processing state
@@ -442,14 +445,7 @@ impl Parser {
     /// processing an ISA segment. Not recommended for production use.
     #[doc(hidden)]
     pub fn set_delimiters(&mut self, delimiters: Delimiters) {
-        self.delimiters = delimiters;
-        self.state = State::Processing;
-    }
-}
-
-impl Default for Parser {
-    fn default() -> Self {
-        Self::new()
+        *self = Self::Processing(delimiters);
     }
 }
 
@@ -476,12 +472,12 @@ mod tests {
 
     #[test]
     fn test_parse_isa_segment() {
-        let mut parser = Parser::new();
+        let mut parser = SegmentParser::init();
         let mut handler = TestHandler::new();
 
         let data = b"ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *231213*1430*^*00501*000000001*0*P*:~";
 
-        let result = parser.parse_segment(data, &mut handler);
+        let result = parser.parse_segments(data, &mut handler);
         assert!(result.is_ok());
         assert_eq!(handler.segments, 1);
         assert!(parser.is_initialized());
@@ -489,24 +485,25 @@ mod tests {
 
     #[test]
     fn test_parse_incomplete() {
-        let mut parser = Parser::new();
+        let mut parser = SegmentParser::init();
         let mut handler = TestHandler::new();
 
         let data = b"ISA*00*          *00*";
 
-        let result = parser.parse_segment(data, &mut handler);
-        assert_eq!(result, Err(ParserError::Incomplete));
+        let Err(SegmentParserError::Incomplete) = parser.parse_segments(data, &mut handler) else {
+            panic!("Expected Incomplete error");
+        };
     }
 
     #[test]
     fn test_parse_regular_segment() {
-        let mut parser = Parser::new();
-        parser.state = State::Processing; // Skip ISA for this test
+        let mut parser = SegmentParser::init();
+        parser.set_delimiters(Delimiters::default()); // Skip ISA for this test
 
         let mut handler = TestHandler::new();
         let data = b"ST*837*0001*005010X222A1~";
 
-        let result = parser.parse_segment(data, &mut handler);
+        let result = parser.parse_segments(data, &mut handler);
         assert!(result.is_ok());
         assert_eq!(handler.segments, 1);
     }
