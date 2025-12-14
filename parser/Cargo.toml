@@ -1,7 +1,10 @@
 [package]
-name = "x12-validation"
+name = "parser"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-parser = { path = "../parser" }
+thiserror = "2"
+
+[dev-dependencies]
+pretty_assertions = "1"

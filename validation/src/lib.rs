@@ -33,7 +33,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use segment::{Segment, SegmentHandler};
+use parser::{Halt, Segment, SegmentHandler};
 
 /// Maximum number of errors to accumulate before stopping
 pub const MAX_ERRORS: usize = 1000;
@@ -636,7 +636,7 @@ impl Default for ValidationSuite {
 }
 
 impl SegmentHandler for ValidationSuite {
-    fn handle(&mut self, segment: &Segment) -> Result<(), segment::Halt> {
+    fn handle(&mut self, segment: &Segment) -> Result<(), Halt> {
         // Run all validators
         for validator in &mut self.validators {
             validator.validate(segment);

@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-use segment::{Halt, SegmentHandler, SegmentParser, SegmentParserError};
+use parser::{Halt, SegmentHandler, SegmentParser, SegmentParserError};
 
 /// Buffer for streaming parse operations
 struct Buffer<const N: usize> {
@@ -54,7 +54,6 @@ impl<const N: usize> Buffer<N> {
     }
 }
 
-/// Chunked file parser
 pub struct StreamingParser<H: SegmentHandler, const BUFFER_SIZE: usize> {
     parser: SegmentParser,
     handler: H,

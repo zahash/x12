@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["segment", "validation", "host"]
+members = ["host", "parser", "validation"]
 
 [workspace.package]
 version = "0.1.0"

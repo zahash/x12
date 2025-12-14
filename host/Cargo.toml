@@ -7,8 +7,8 @@ description = "Host application for parsing large X12 files"
 [dependencies]
 thiserror = "2"
 
-segment = { path = "../segment", features = ["std"] }
-x12-validation = { path = "../validation", features = ["std"] }
+parser = { path = "../parser" }
+x12-validation = { path = "../validation" }
 
 [[bin]]
 name = "x12"

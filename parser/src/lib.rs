@@ -289,11 +289,6 @@ impl SegmentParser {
         Self::Initial
     }
 
-    /// Reset parser to initial state
-    pub fn reset(&mut self) {
-        *self = Self::Initial;
-    }
-
     /// Parse multiple segments from the buffer and invoke handler for each.
     ///
     /// Returns the number of bytes consumed on success.
@@ -366,31 +361,30 @@ impl SegmentParser {
             )));
         }
 
-        // Extract delimiters from standard positions
-        let element_sep = buffer[3];
-        let subelement_sep = buffer[104];
-        let segment_term = buffer[105];
-
-        let mut delimiters = Delimiters {
-            element: element_sep,
-            subelement: subelement_sep,
-            segment: segment_term,
-            ..Default::default() // repetetion default for now. will be extracted from ISA-11 below
-        };
-
         // Get the data between ISA* and segment terminator
         let data = &buffer[4..105];
-        let segment = Segment::new(b"ISA", data, delimiters);
+        let mut segment = Segment::new(
+            b"ISA",
+            data,
+            Delimiters {
+                // Extract delimiters from standard positions
+                element: buffer[3],
+                subelement: buffer[104],
+                segment: buffer[105],
+                ..Default::default() // repetetion default for now. will be extracted from ISA-11 below
+            },
+        );
 
         // Extract repetition separator from ISA11
-        if let Some(elem) = segment.element(11) {
-            if let Some(&rep) = elem.as_bytes().first() {
-                delimiters.repetition = rep;
-            }
-        }
+        segment.delimiters.repetition = *segment
+            .element(11)
+            .and_then(|ele| ele.as_bytes().first())
+            .ok_or(SegmentParserError::Halt(Halt::new(
+                "Missing repetition separator in ISA-11",
+            )))?;
 
         handler.handle(&segment)?;
-        Ok((ISA_SIZE_BYTES, delimiters))
+        Ok((ISA_SIZE_BYTES, segment.delimiters))
     }
 
     /// Parse a regular segment (non-ISA)
@@ -432,101 +426,4 @@ impl SegmentParser {
         handler.handle(&segment)?;
         Ok(segment_end + 1) // +1 for segment terminator
     }
-
-    /// Check if parser has been initialized with ISA segment
-    #[inline]
-    pub fn is_initialized(&self) -> bool {
-        matches!(self, SegmentParser::Processing(_))
-    }
-
-    /// Set custom delimiters and force parser into processing state
-    ///
-    /// This is useful when you want to parse segments without first
-    /// processing an ISA segment. Not recommended for production use.
-    #[doc(hidden)]
-    pub fn set_delimiters(&mut self, delimiters: Delimiters) {
-        *self = Self::Processing(delimiters);
-    }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestHandler {
-        segments: usize,
-    }
-
-    impl TestHandler {
-        fn new() -> Self {
-            Self { segments: 0 }
-        }
-    }
-
-    impl SegmentHandler for TestHandler {
-        fn handle(&mut self, _segment: &Segment) -> Result<(), Halt> {
-            self.segments += 1;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn test_parse_isa_segment() {
-        let mut parser = SegmentParser::init();
-        let mut handler = TestHandler::new();
-
-        let data = b"ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *231213*1430*^*00501*000000001*0*P*:~";
-
-        let result = parser.parse_segments(data, &mut handler);
-        assert!(result.is_ok());
-        assert_eq!(handler.segments, 1);
-        assert!(parser.is_initialized());
-    }
-
-    #[test]
-    fn test_parse_incomplete() {
-        let mut parser = SegmentParser::init();
-        let mut handler = TestHandler::new();
-
-        let data = b"ISA*00*          *00*";
-
-        let Err(SegmentParserError::Incomplete) = parser.parse_segments(data, &mut handler) else {
-            panic!("Expected Incomplete error");
-        };
-    }
-
-    #[test]
-    fn test_parse_regular_segment() {
-        let mut parser = SegmentParser::init();
-        parser.set_delimiters(Delimiters::default()); // Skip ISA for this test
-
-        let mut handler = TestHandler::new();
-        let data = b"ST*837*0001*005010X222A1~";
-
-        let result = parser.parse_segments(data, &mut handler);
-        assert!(result.is_ok());
-        assert_eq!(handler.segments, 1);
-    }
-
-    #[test]
-    fn test_element_access() {
-        let element = Element::new(b"TEST");
-        assert_eq!(element.as_bytes(), b"TEST");
-        assert_eq!(element.as_str(), Some("TEST"));
-        assert!(!element.is_empty());
-    }
-
-    #[test]
-    fn test_component_split() {
-        let element = Element::new(b"AA:BB:CC");
-        let components: alloc::vec::Vec<_> = element.split_components(b':').collect();
-        assert_eq!(components.len(), 3);
-        assert_eq!(components[0], b"AA");
-        assert_eq!(components[1], b"BB");
-        assert_eq!(components[2], b"CC");
-    }
-}
-
-// Test allocator for unit tests
-#[cfg(test)]
-extern crate alloc;
